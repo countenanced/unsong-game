@@ -434,7 +434,8 @@ function speakSuccess() {
   state.holding = true; state.holdTicks = 0;
   setTimeout(() => {
     if (state.modal) return;               // seized mid-think: the word is forfeit
-    const earned = state.word.free ? 0 : CFG.cents + (a ? CFG.bonusCents : 0);
+    let earned = state.word.free ? 0 : CFG.cents + (a ? CFG.bonusCents : 0);
+    if ((state.charges.honeyed || 0) > 0) earned *= 2;        // the honeyed word: everything pays double
     earn(earned);
     if (state.word.free) {
       const u = UPGRADES.find(x => x.id === state.word.grants);
