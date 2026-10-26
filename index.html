@@ -56,6 +56,7 @@ const CFG = {
   cents: 10,
   bonusCents: 100,         // for matching an amulet's gematria
   penaltyCents: 7000,      // for speaking a proprietary word without a licence
+  violationHoldMs: 3000,   // the machine thinks about what you said before the notice appears
   holdMs: 1000,            // how long a finished word lingers before entering history
   errBlankMs: 1000,        // after a mistake, silence this long blanks the box
   hebCol: 10,              // width of the hebrew column on the left (letters hug its right edge)
@@ -423,9 +424,13 @@ function violate(u) {
   state.cents -= CFG.penaltyCents;
   state.infractions++;
   logLine(`  ${u.rom.toUpperCase()}`, CFG.colors.bad, true, u.heb, gval(u.heb), -CFG.penaltyCents);
-  state.modal = { kind: 'violation', id: u.id };
+  // the red line stays, the dots creep out as if the machine were weighing the
+  // word, and only then does the notice come down.  keys are dead throughout.
+  state.holding = true; state.holdTicks = 0;
+  state.modal = { kind: 'violation', id: u.id, showAt: Date.now() + CFG.violationHoldMs };
   save();
 }
+const modalVisible = () => state.modal && Date.now() >= (state.modal.showAt || 0);
 function acceptModal() {
   state.modal = null;
   state.holding = false; state.matchHold = false;
@@ -449,7 +454,7 @@ function handleKey(e) {
     e.preventDefault();
     // "any key": something you would actually press, not arrows, modifiers or function keys
     const real = e.key.length === 1 || ['Enter', 'Backspace', 'Escape'].includes(e.key);
-    if (real && !e.ctrlKey && !e.metaKey && !e.altKey) acceptModal();
+    if (modalVisible() && real && !e.ctrlKey && !e.metaKey && !e.altKey) acceptModal();
     return;
   }
   if (e.key === 'F9') { scr.smooth = !scr.smooth; e.preventDefault(); return; }
@@ -792,7 +797,7 @@ function drawNow() {
   const hint = state.tab === 'UPGRADE' ? '←→ tabs  ↑↓ select' : '←→ tabs';
   scr.text(cols - hint.length - 1, ty, hint, C.tabFg, C.tabBg);
 
-  if (state.modal) drawModal();
+  if (modalVisible()) drawModal();
   scr.render();
 }
 
@@ -803,7 +808,7 @@ function save() {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       cents: state.cents, amulets: state.amulets.map(a => a.heb), log: state.log.slice(-200),
       owned: state.owned, infractions: state.infractions,
-      modal: state.modal ? { kind: state.modal.kind, id: state.modal.id } : null,
+      modal: state.modal ? { kind: state.modal.kind, id: state.modal.id, showAt: state.modal.showAt } : null,
     }));
   } catch (e) { /* private window or storage disabled: play on without memory */ }
 }
