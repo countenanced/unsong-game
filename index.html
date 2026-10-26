@@ -311,6 +311,7 @@ const state = {
   amulets: [],             // the five currently on offer
   owned: [],               // licences bought and not yet spoken: single-use contracts
   charges: {},             // id -> words of effect remaining
+  pending: {},             // id -> charges bought but not yet earned by speaking the word
   sel: 0,                  // highlighted row on the UPGRADE tab
   typed: [],               // every consonant key of the current attempt, right or wrong
   modal: null,             // a notice that seizes the screen until a key is pressed
@@ -430,9 +431,10 @@ function speakSuccess() {
       replenishAmulets();
     }
     if (state.word.grants) {                      // the bought word, now spoken: its power arrives
-      const u = UPGRADES.find(x => x.id === state.word.grants);
-      if (u && u.charges) state.charges[u.id] = u.charges;
-      state.owned = state.owned.filter(x => x !== u.id);   // the licence was for one utterance
+      const id = state.word.grants;
+      state.charges[id] = (state.charges[id] || 0) + (state.pending[id] || 0);   // +20 per purchase
+      delete state.pending[id];
+      state.owned = state.owned.filter(x => x !== id);     // the licence was for one utterance
       replenishAmulets();
     }
     if (!state.word.free) for (const id of Object.keys(state.charges)) {
@@ -519,9 +521,10 @@ function handleKey(e) {
     else if (e.key === 'ArrowUp') state.sel = Math.max(state.sel - 1, 0);
     else if (e.key === 'Enter') {
       const u = UPGRADES[state.sel];
-      if (u && !state.owned.includes(u.id) && state.cents >= u.cost) {
+      if (u && state.cents >= u.cost) {
         state.cents -= u.cost;
-        state.owned.push(u.id);
+        if (!state.owned.includes(u.id)) state.owned.push(u.id);
+        state.pending[u.id] = (state.pending[u.id] || 0) + (u.charges || 0);
         // you are sent back to speak the word you just bought.  nothing is
         // granted until you have said it, and saying it costs no charge.
         clearBox();
@@ -738,21 +741,20 @@ function drawSide(x0, y0, w, h) {
 
 function drawUpgrade(x0, y0, w, h) {
   const C = CFG.colors;
-  const anyAffordable = UPGRADES.some(u => !state.owned.includes(u.id) && state.cents >= u.cost);
+  const anyAffordable = UPGRADES.some(u => state.cents >= u.cost);
   if (!anyAffordable) {
     const msg = 'Insufficient funds.';
     scr.text(x0 + Math.floor((w - msg.length) / 2), y0, msg, C.bright);
   }
   UPGRADES.forEach((u, i) => {
     const r = y0 + 1 + i;
-    const owned = state.owned.includes(u.id);
-    const can = !owned && state.cents >= u.cost;
+    const can = state.cents >= u.cost;
     const hi = i === state.sel;
     // too expensive: greyed out.  affordable: price in gold.  highlighted: reverse video.
     const bg = hi ? (can ? C.fg : C.dim) : null;
     const fg = hi ? C.bg : (can ? C.fg : C.dim);
     if (hi) scr.fill(x0, r, w, 1, ' ', fg, bg);
-    const cost = owned ? 'PENDING' : `$${(u.cost / 100).toFixed(2)}`;
+    const cost = `$${(u.cost / 100).toFixed(2)}`;
     scr.text(x0 + 1, r, u.title, hi ? C.bg : (can ? C.bright : C.dim), bg, can);
     scr.text(x0 + 24 + 8 - cost.length, r, cost, hi ? C.bg : (can ? C.money : C.dim), bg, can);
     putHebrew(x0 + 36 + 8, r, u.heb, fg, bg, can);
@@ -870,7 +872,7 @@ function save() {
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       cents: state.cents, amulets: state.amulets.map(a => a.heb), log: state.log.slice(-200),
-      owned: state.owned, charges: state.charges, infractions: state.infractions,
+      owned: state.owned, charges: state.charges, pending: state.pending, infractions: state.infractions,
       modal: state.modal ? { kind: state.modal.kind, id: state.modal.id, showAt: state.modal.showAt, applied: state.modal.applied } : null,
     }));
   } catch (e) { /* private window or storage disabled: play on without memory */ }
@@ -889,6 +891,7 @@ function load() {
     state.log = d.log || [];
     state.owned = d.owned || [];
     state.charges = d.charges || {};
+    state.pending = d.pending || {};
     state.infractions = d.infractions || 0;
     state.modal = d.modal || null;
     return true;
