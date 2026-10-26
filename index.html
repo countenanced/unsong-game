@@ -640,7 +640,7 @@ function drawSpeak(x0, y0, w, h) {
     cursorAt = Math.min(at, inp.length);
   }
   const ix = rx, iy = py + 1;                          // first letter lines up with the prompt
-  if (state.err) for (const c of inp) if (c.fg === C.ghost) c.fg = C.bad;   // the way ahead turns red
+  if (state.err) for (const c of inp) if (c.fg === C.ghost) c.ch = ' ';     // the way ahead vanishes
   // the hebrew of what you have spoken so far, growing leftward beside the box
   const spoken = state.cons.slice(0, state.ci).map(c => word[c.segIndex].heb).join('');
   putHebrew(hx, iy, spoken, C.bright, true);
