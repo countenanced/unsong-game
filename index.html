@@ -71,7 +71,7 @@ const CFG = {
   inputMax: 40,            // how far a stray typist can run past the end of the word
   sideCols: 38,            // width of the AMULETS side panel
   amuletsShown: 5,
-  juice: 0.5,              // TEMPORARY: chance that a word is rigged to match an amulet (?juice=0 to disable)
+  juice: 0.08,             // chance that a word is rigged to match an amulet (?juice=0 to disable)
   boxCols: 20,
   statusMsg: 'Speak slowly and enunciate.',             // fixed interior width of the input box (longest word is 16 letters)
 };
@@ -275,13 +275,22 @@ const AMULET_POOL = [
   ['כבוד', 'ka-vod', 'glory'],     ['גלגול', 'gil-gul', 'rebirth'], ['יחוד', 'yi-chud', 'union'],
 ].map(([heb, rom, gloss]) => ({ heb, rom, gloss, val: gval(heb) }));
 const amuletRom = a => CFG.amuletCaps ? a.rom.toUpperCase() : a.rom;
+const AMULET_SPELLINGS = new Set(AMULET_POOL.map(a => a.heb));
 
-function drawAmulets(n) {
-  // n fresh amulets not currently shown, kept in ascending gematria order
+const wakingActive = () => (state.charges.waking || 0) > 0;
+const amuletTarget = () => CFG.amuletsShown * (wakingActive() ? 2 : 1);
+function replenishAmulets() {
+  // draw fresh amulets (new spellings, new values) up to the target, in
+  // ascending gematria order.  if there are more than the target, none are
+  // taken away: they simply are not replaced as they are claimed.
   const have = new Set(state.amulets.map(a => a.heb));
   const vals = new Set(state.amulets.map(a => a.val));
   const pool = AMULET_POOL.filter(a => !have.has(a.heb) && !vals.has(a.val));
-  for (let i = 0; i < n && pool.length; i++) state.amulets.push(pool.splice(rnd(pool.length), 1)[0]);
+  while (state.amulets.length < amuletTarget() && pool.length) {
+    const a = pool.splice(rnd(pool.length), 1)[0];
+    state.amulets.push(a); vals.add(a.val);
+    for (let i = pool.length - 1; i >= 0; i--) if (pool[i].val === a.val) pool.splice(i, 1);
+  }
   state.amulets.sort((a, b) => a.val - b.val);
 }
 
@@ -348,13 +357,13 @@ function logLine(text, fg = CFG.colors.fg, bold = false, heb = null, val = null,
 
 function newWord() {
   state.word = makeWord();
-  const waking = (state.charges.waking || 0) > 0;
-  if (waking || Math.random() < CFG.juice) {
-    // rigged: keep rolling until a word lands on one of the amulets on offer
+  if (wakingActive() || Math.random() < CFG.juice) {
+    // rigged: keep rolling until a word lands on one of the amulets on offer,
+    // but never by simply being that amulet letter for letter
     const targets = new Set(state.amulets.map(a => a.val));
     for (let i = 0; i < 5000; i++) {
       const w = makeWord();
-      if (targets.has(gematria(w))) { state.word = w; break; }
+      if (targets.has(gematria(w)) && !AMULET_SPELLINGS.has(hebrew(w))) { state.word = w; break; }
     }
   }
   state.cons = [];
@@ -396,7 +405,7 @@ function speakSuccess() {
     if (a) {                               // the claimed amulet is replaced
       state.amulets = state.amulets.filter(x => x !== a);
       delete a.won;
-      drawAmulets(1);
+      replenishAmulets();
     }
     for (const id of Object.keys(state.charges)) {
       if (--state.charges[id] <= 0) { delete state.charges[id]; state.owned = state.owned.filter(x => x !== id); }
@@ -486,6 +495,7 @@ function handleKey(e) {
         state.cents -= u.cost;
         state.owned.push(u.id);
         if (u.charges) state.charges[u.id] = u.charges;
+        replenishAmulets();
         save();
       }
     }
@@ -864,7 +874,7 @@ window.addEventListener('error', e => {
 
 state.intro = INTRO.map(l => '  ' + l);
 load();
-drawAmulets(CFG.amuletsShown - state.amulets.length);
+replenishAmulets();
 { // dev: ?demo=N pre-fills N spoken words so the scrolling can be inspected
   const n = parseInt(new URLSearchParams(location.search).get('demo') || '0', 10);
   for (let i = 0; i < n; i++) {
