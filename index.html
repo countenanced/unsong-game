@@ -56,7 +56,6 @@ const CFG = {
   },
   cents: 10,
   bonusCents: 100,         // for matching an amulet's gematria
-  penaltyCents: 7000,      // for speaking a proprietary word without a licence
   violationHoldMs: 1500,   // the machine thinks about what you said before the notice appears
   holdMs: 1000,            // how long a finished word lingers before entering history
   errBlankMs: 1000,        // after a mistake, silence this long blanks the box
@@ -301,8 +300,11 @@ const fmtMoney = c => (c < 0 ? '-' : '') + '$' + (Math.abs(c) / 100).toFixed(2);
 // ---------- upgrades ----------
 const UPGRADES = [
   // id, cost in cents, title, hebrew, romanization.  effects to be decided.
-  // the waking word: every word matches an amulet, for a while.  it wears off.
-  { id: 'waking', cost: 500, title: 'Waking Word ©2003', heb: 'נסמיקפין', rom: 'ni-som-ya-ka-fe-yin', charges: 20 },
+  // id, cost, penalty for unlicensed use, title, hebrew, romanization, words of effect.
+  // waking: every word matches an amulet, for a while.
+  { id: 'waking', cost: 500, penalty: 7000, title: 'Waking Word ©2003', heb: 'נסמיקפין', rom: 'ni-som-ya-ka-fe-yin', charges: 20 },
+  // glib: whatever key you press, the right consonant comes out.  (silver tongue: 358, as the serpent and the messiah)
+  { id: 'glib', cost: 9000, penalty: 30000, title: 'Honeyed Word ©1997', heb: 'סלורטנג', rom: 'sil-ver-tong', charges: 20 },
 ];
 
 // ---------- the SPEAK tab ----------
@@ -484,9 +486,9 @@ const modalVisible = () => state.modal && Date.now() >= (state.modal.showAt || 0
 function applyViolation(m) {
   // the fine and the record land the moment the notice appears, once
   const u = UPGRADES.find(x => x.id === m.id);
-  state.cents -= CFG.penaltyCents;
+  state.cents -= u.penalty;
   state.infractions++;
-  logLine(`  ${u.rom.toUpperCase()}`, CFG.colors.bad, true, u.heb, gval(u.heb), -CFG.penaltyCents);
+  logLine(`  ${u.rom.toUpperCase()}`, CFG.colors.bad, true, u.heb, gval(u.heb), -u.penalty);
   m.applied = true;
   save();
 }
@@ -550,9 +552,11 @@ function handleKey(e) {
     return;
   }
   if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
-  const k = e.key.toLowerCase();
-  if (!/^[a-z]$/.test(k)) return;
+  let k = e.key.toLowerCase();
   if (state.holding) return;
+  // the honeyed word: whatever you press, the right consonant comes out
+  if ((state.charges.glib || 0) > 0 && !state.err && state.cons[state.ci]) k = state.cons[state.ci].rom[state.li];
+  if (!/^[a-z]$/.test(k)) return;
   if ('aeiou'.includes(k)) return;          // vowels are not spoken here; typing them is harmless
   state.typed.push(k);
   const cur = state.cons[state.ci];
@@ -782,7 +786,7 @@ function drawModal() {
     'You have been found in violation of federal intellectual property law (17 U.S.C. § 501).',
     null,                                                            // the citation line
     'A disciplinary penalty has been immediately assessed in the amount of:',
-    { amount: fmtMoney(-CFG.penaltyCents) },                         // centred, in red, with the minus
+    { amount: fmtMoney(-u.penalty) },                                // centred, in red, with the minus
     'Collection shall not be deemed a waiver of the Company\'s right to pursue further fines, sanctions, ' +
     'or proceedings arising from this or any related infraction.',
     'A record of this infraction has been added to your permanent record.',
