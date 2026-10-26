@@ -424,7 +424,11 @@ function speakSuccess() {
     if (state.modal) return;               // seized mid-think: the word is forfeit
     const earned = state.word.free ? 0 : CFG.cents + (a ? CFG.bonusCents : 0);
     state.cents += earned;
-    if (state.word.free) logLine(`  ${romanization(state.word)}`, CFG.colors.contract, false, hebrew(state.word), val, null, null, true);
+    if (state.word.free) {
+      const u = UPGRADES.find(x => x.id === state.word.grants);
+      const label = (u ? u.title : 'contract').replace(/\s*©.*$/, '').toUpperCase();   // "WAKING WORD"
+      logLine(`  ${romanization(state.word)}`, CFG.colors.contract, false, hebrew(state.word), val, null, null, label);
+    }
     else logLine(`  ${romanization(state.word)}`, CFG.colors.fg, false, hebrew(state.word), val, earned,
                  a ? { heb: a.heb, gloss: a.gloss } : null);
     if (a) {                               // the claimed amulet is replaced
@@ -592,7 +596,10 @@ function drawSpeak(x0, y0, w, h) {
       cx += CFG.valCol + CFG.gap;
       putHebrew(cx + CFG.hebCol - 1, r, ln.heb, ln.fg, ln.bold);            cx += CFG.hebCol + CFG.gap;
       scr.text(cx, r, ln.text.trim().slice(0, CFG.romCol), ln.fg, null, ln.bold);   cx += CFG.romCol + CFG.gap;
-      if (ln.contract) scr.text(cx + CFG.earnCol - 1, r, '—', ln.fg);     // an em dash where the money would be
+      if (ln.contract) {
+        scr.text(cx + CFG.earnCol - 1, r, '—', ln.fg);                       // an em dash where the money would be
+        scr.text(cx + CFG.earnCol + CFG.gap, r, ln.contract, ln.fg, null, true);   // and its name where the amulet would be
+      }
       if (ln.earned != null) {
         // "$ .25" for small change so that "$5.25" stands out
         // "$ .25" for small change; whole dollars without cents so a penalty fits the column
