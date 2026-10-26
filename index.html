@@ -301,7 +301,7 @@ const state = {
   owned: [],               // upgrade ids bought
   sel: 0,                  // highlighted row on the UPGRADE tab
   typed: [],               // every consonant key of the current attempt, right or wrong
-  modal: null,             // a notice that seizes the screen until Enter is pressed
+  modal: null,             // a notice that seizes the screen until a key is pressed
   infractions: 0,          // the permanent record
   intro: [],               // the welcome, pinned at the top
   log: [],                 // history lines: {text, fg, bold, heb}
@@ -445,7 +445,13 @@ function speakFail(k) {
 }
 
 function handleKey(e) {
-  if (state.modal) { e.preventDefault(); if (e.key === 'Enter') acceptModal(); return; }   // only Enter gets through
+  if (state.modal) {
+    e.preventDefault();
+    // "any key": something you would actually press, not arrows, modifiers or function keys
+    const real = e.key.length === 1 || ['Enter', 'Backspace', 'Escape'].includes(e.key);
+    if (real && !e.ctrlKey && !e.metaKey && !e.altKey) acceptModal();
+    return;
+  }
   if (e.key === 'F9') { scr.smooth = !scr.smooth; e.preventDefault(); return; }
   if (e.key === 'Tab' || e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
     e.preventDefault();
@@ -725,9 +731,7 @@ function drawModal() {
     } else scr.text(x + 2, r, ln, C.fg);
     r++;
   }
-  const btn = '[ I ACCEPT ]';
-  const bc = x + Math.floor((W - btn.length) / 2), br = y + H - 2;
-  scr.text(bc, br, btn, C.bg, C.fg, true);
+  scr.text(x + 2, y + H - 2, 'Press any key to continue.', C.fg);
 }
 
 function drawOffice(x0, y0, w, h) {
