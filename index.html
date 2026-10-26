@@ -355,6 +355,30 @@ function logLine(text, fg = CFG.colors.fg, bold = false, heb = null, val = null,
   if (state.log.length > 500) state.log.shift();
 }
 
+// build a word from a romanization and its hebrew, e.g. an upgrade's own word
+function wordFrom(rom, heb) {
+  const letters = [...heb];
+  const segs = [];
+  rom.split('-').forEach((syl, si) => {
+    if (si > 0) segs.push({ t: '-' });
+    for (let i = 0; i < syl.length; i++) {
+      if ('aeiou'.includes(syl[i])) { segs.push({ t: 'V', rom: syl[i] }); continue; }
+      const two = syl.slice(i, i + 2);
+      const c = ['sh', 'ts', 'ch', 'kh'].includes(two) ? two : syl[i];
+      segs.push({ t: 'C', heb: letters.shift(), rom: c });
+      i += c.length - 1;
+    }
+  });
+  return segs;
+}
+
+function setWord(word) {
+  state.word = word;
+  state.cons = [];
+  state.word.forEach((s, i) => { if (s.t === 'C' && !s.silent) state.cons.push({ rom: s.rom, segIndex: i }); });
+  state.ci = 0; state.li = 0;
+}
+
 function newWord() {
   state.word = makeWord();
   if (wakingActive() || Math.random() < CFG.juice) {
@@ -366,9 +390,7 @@ function newWord() {
       if (targets.has(gematria(w)) && !AMULET_SPELLINGS.has(hebrew(w))) { state.word = w; break; }
     }
   }
-  state.cons = [];
-  state.word.forEach((s, i) => { if (s.t === 'C' && !s.silent) state.cons.push({ rom: s.rom, segIndex: i }); });
-  state.ci = 0; state.li = 0;
+  setWord(state.word);
 }
 
 function romanization(word) {
@@ -407,7 +429,7 @@ function speakSuccess() {
       delete a.won;
       replenishAmulets();
     }
-    for (const id of Object.keys(state.charges)) {
+    if (!state.word.free) for (const id of Object.keys(state.charges)) {
       if (--state.charges[id] <= 0) { delete state.charges[id]; state.owned = state.owned.filter(x => x !== id); }
     }
     state.holding = false; state.matchHold = false;
@@ -496,6 +518,11 @@ function handleKey(e) {
         state.owned.push(u.id);
         if (u.charges) state.charges[u.id] = u.charges;
         replenishAmulets();
+        // you are sent back to speak the word you just bought; it costs no charge
+        clearBox();
+        const w = wordFrom(u.rom, u.heb); w.free = true;
+        setWord(w);
+        state.tab = 'SPEAK';
         save();
       }
     }
