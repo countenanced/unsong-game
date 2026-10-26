@@ -384,6 +384,7 @@ function speakSuccess() {
   state.matchHold = !!a;                   // the input row lights up alongside the amulet
   state.holding = true; state.holdTicks = 0;
   setTimeout(() => {
+    if (state.modal) return;               // seized mid-think: the word is forfeit
     const earned = CFG.cents + (a ? CFG.bonusCents : 0);
     state.cents += earned;
     logLine(`  ${romanization(state.word)}`, CFG.colors.fg, false, hebrew(state.word), val, earned,
@@ -427,6 +428,7 @@ function violate(u) {
 }
 function acceptModal() {
   state.modal = null;
+  state.holding = false; state.matchHold = false;
   clearBox();
   newWord();
   save();
@@ -476,17 +478,17 @@ function handleKey(e) {
   if (state.holding) return;
   if ('aeiou'.includes(k)) return;          // vowels are not spoken here; typing them is harmless
   state.typed.push(k);
-  if (detectViolation()) return;
   const cur = state.cons[state.ci];
   if (!cur) return;
-  if (state.err) { speakFail(k); return; }
-  if (cur.rom[state.li] === k) {
+  if (state.err) speakFail(k);
+  else if (cur.rom[state.li] === k) {
     state.li++;
     if (state.li >= cur.rom.length) { state.ci++; state.li = 0; }
     if (state.ci >= state.cons.length) speakSuccess();
   } else {
     speakFail(k);
   }
+  detectViolation();                        // after the letter has landed, so it stays on screen
 }
 
 // ---------- drawing ----------
