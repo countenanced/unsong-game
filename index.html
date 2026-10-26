@@ -698,7 +698,8 @@ function drawModal() {
   const paras = [
     'You have been found in violation of federal intellectual property law (17 U.S.C. § 501).',
     null,                                                            // the citation line
-    `A disciplinary penalty has been assessed in the amount of ${fmtMoney(CFG.penaltyCents)}. ` +
+    'A disciplinary penalty has been assessed in the amount of:',
+    { amount: fmtMoney(CFG.penaltyCents) },                          // centred, in red
     'Nothing herein shall be construed as a waiver of any rights or remedies, all of which are expressly reserved.',
     'A record of this infraction has been added to your permanent record.',
   ];
@@ -706,6 +707,7 @@ function drawModal() {
   const lines = [];
   for (const p of paras) {
     if (p === null) { lines.push({ cite: true }); lines.push(''); continue; }
+    if (p.amount) { lines.push(p); lines.push(''); continue; }
     let line = '';
     for (const word of p.split(' ')) {
       if ((line + ' ' + word).trim().length > inner) { lines.push(line); line = word; }
@@ -728,6 +730,8 @@ function drawModal() {
       scr.text(x + 2, r, a, C.fg);
       putHebrew(x + 2 + a.length + u.heb.length - 1, r, u.heb, C.bright, true);
       scr.text(x + 2 + a.length + u.heb.length, r, b, C.fg);
+    } else if (ln && ln.amount) {
+      scr.text(x + Math.floor((W - ln.amount.length) / 2), r, ln.amount, C.bad, null, true);
     } else scr.text(x + 2, r, ln, C.fg);
     r++;
   }
