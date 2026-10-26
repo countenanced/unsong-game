@@ -318,19 +318,25 @@ const state = {
   blinkOn: true,
 };
 
-const INTRO = [
-  '╔════════════════════════════════════════════════╗',
-  '║                                                ║',
-  '║   C O U N T E N A N C E                        ║',
-  '║                                                ║',
-  '║   a speaking machine for an invented tongue    ║',
-  '║                                                ║',
-  '║   words appear.  speak them by typing their    ║',
-  '║   consonants.  each word spoken earns 10¢.     ║',
-  '║   a slip of the tongue and you begin again.    ║',
-  '║                                                ║',
-  '╚════════════════════════════════════════════════╝',
+// figlet "pagga" font.  swap the art for another font any time.
+const ART = [
+  "░█▀▀░█▀█░█░█░█▀█░▀█▀░█▀▀░█▀█░█▀█░█▀█░█▀▀░█▀▀",
+  "░█░░░█░█░█░█░█░█░░█░░█▀▀░█░█░█▀█░█░█░█░░░█▀▀",
+  "░▀▀▀░▀▀▀░▀▀▀░▀░▀░░▀░░▀▀▀░▀░▀░▀░▀░▀░▀░▀▀▀░▀▀▀",
 ];
+const INTRO = (() => {
+  const w = Math.max(...ART.map(l => l.length)) + 4;
+  const pad = l => '║ ' + l.padEnd(w - 4) + ' ║';
+  return [
+    '╔' + '═'.repeat(w - 2) + '╗',
+    pad(''),
+    ...ART.map(pad),
+    pad(''),
+    pad('Copyright © 1999. All rights reserved.'),
+    pad(''),
+    '╚' + '═'.repeat(w - 2) + '╝',
+  ];
+})();
 
 function logLine(text, fg = CFG.colors.fg, bold = false, heb = null, val = null, earned = null, amulet = null) {
   state.log.push({ text, fg, bold, heb, val, earned, amulet });
