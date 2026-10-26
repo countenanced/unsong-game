@@ -713,7 +713,7 @@ function drawModal() {
     }
     lines.push(line); lines.push('');
   }
-  const H = lines.length + 6;
+  const H = lines.length + 8;
   const x = Math.floor((scr.cols - W) / 2), y = Math.floor((scr.rows - H) / 2);
   const title = ' UNLICENSED UTTERANCE DETECTED ';
   const on = state.blinkOn;                                  // in step with the cursor's blink
@@ -731,6 +731,8 @@ function drawModal() {
     } else scr.text(x + 2, r, ln, C.fg);
     r++;
   }
+  const btn = '[ I ACCEPT ]';
+  scr.text(x + Math.floor((W - btn.length) / 2), y + H - 4, btn, C.bg, C.fg, true);
   scr.text(x + 2, y + H - 2, 'Press any key to continue.', C.fg);
 }
 
