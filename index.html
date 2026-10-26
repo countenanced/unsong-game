@@ -421,16 +421,23 @@ function detectViolation() {
 }
 function violate(u) {
   clearTimeout(state.errTimer);
-  state.cents -= CFG.penaltyCents;
-  state.infractions++;
-  logLine(`  ${u.rom.toUpperCase()}`, CFG.colors.bad, true, u.heb, gval(u.heb), -CFG.penaltyCents);
   // the red line stays, the dots creep out as if the machine were weighing the
-  // word, and only then does the notice come down.  keys are dead throughout.
+  // word, and only then does the notice come down, with the fine.  keys are
+  // dead throughout.
   state.holding = true; state.holdTicks = 0;
-  state.modal = { kind: 'violation', id: u.id, showAt: Date.now() + CFG.violationHoldMs };
+  state.modal = { kind: 'violation', id: u.id, showAt: Date.now() + CFG.violationHoldMs, applied: false };
   save();
 }
 const modalVisible = () => state.modal && Date.now() >= (state.modal.showAt || 0);
+function applyViolation(m) {
+  // the fine and the record land the moment the notice appears, once
+  const u = UPGRADES.find(x => x.id === m.id);
+  state.cents -= CFG.penaltyCents;
+  state.infractions++;
+  logLine(`  ${u.rom.toUpperCase()}`, CFG.colors.bad, true, u.heb, gval(u.heb), -CFG.penaltyCents);
+  m.applied = true;
+  save();
+}
 function acceptModal() {
   state.modal = null;
   state.holding = false; state.matchHold = false;
@@ -797,7 +804,10 @@ function drawNow() {
   const hint = state.tab === 'UPGRADE' ? '←→ tabs  ↑↓ select' : '←→ tabs';
   scr.text(cols - hint.length - 1, ty, hint, C.tabFg, C.tabBg);
 
-  if (modalVisible()) drawModal();
+  if (modalVisible()) {
+    if (!state.modal.applied) applyViolation(state.modal);
+    drawModal();
+  }
   scr.render();
 }
 
@@ -808,7 +818,7 @@ function save() {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       cents: state.cents, amulets: state.amulets.map(a => a.heb), log: state.log.slice(-200),
       owned: state.owned, infractions: state.infractions,
-      modal: state.modal ? { kind: state.modal.kind, id: state.modal.id, showAt: state.modal.showAt } : null,
+      modal: state.modal ? { kind: state.modal.kind, id: state.modal.id, showAt: state.modal.showAt, applied: state.modal.applied } : null,
     }));
   } catch (e) { /* private window or storage disabled: play on without memory */ }
 }
