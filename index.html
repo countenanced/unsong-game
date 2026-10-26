@@ -53,9 +53,9 @@ const CFG = {
     ghost:     '#6a6a6a',
     statusBg:  '#303030',   // the status bar under the input   // the grey consonants waiting to be overwritten
   },
-  cents: 25,
-  bonusCents: 500,         // for matching an amulet's gematria
-  penaltyCents: 200000,    // for speaking a proprietary word without a licence
+  cents: 10,
+  bonusCents: 100,         // for matching an amulet's gematria
+  penaltyCents: 7000,      // for speaking a proprietary word without a licence
   holdMs: 1000,            // how long a finished word lingers before entering history
   errBlankMs: 1000,        // after a mistake, silence this long blanks the box
   hebCol: 10,              // width of the hebrew column on the left (letters hug its right edge)
@@ -289,7 +289,7 @@ const fmtMoney = c => (c < 0 ? '-' : '') + '$' + (Math.abs(c) / 100).toFixed(2);
 // ---------- upgrades ----------
 const UPGRADES = [
   // id, cost in cents, title, hebrew, romanization.  effects to be decided.
-  { id: 'waking', cost: 200000, title: 'Waking Word ©2003', heb: 'נסמיקפין', rom: 'ni-som-ya-ka-fe-yin' },
+  { id: 'waking', cost: 500, title: 'Waking Word ©2003', heb: 'נסמיקפין', rom: 'ni-som-ya-ka-fe-yin' },
 ];
 
 // ---------- the SPEAK tab ----------
@@ -326,7 +326,7 @@ const INTRO = [
   '║   a speaking machine for an invented tongue    ║',
   '║                                                ║',
   '║   words appear.  speak them by typing their    ║',
-  '║   consonants.  each word spoken earns 25¢.     ║',
+  '║   consonants.  each word spoken earns 10¢.     ║',
   '║   a slip of the tongue and you begin again.    ║',
   '║                                                ║',
   '╚════════════════════════════════════════════════╝',
