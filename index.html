@@ -766,13 +766,14 @@ function drawSide(x0, y0, w, h) {
 
 function drawUpgrade(x0, y0, w, h) {
   const C = CFG.colors;
+  scr.text(x0 + 1, y0, 'All rights reserved. Purchase license valid for single use only.', C.fg);
   const anyAffordable = UPGRADES.some(u => state.cents >= u.cost);
   if (!anyAffordable) {
     const msg = 'Insufficient funds.';
-    scr.text(x0 + Math.floor((w - msg.length) / 2), y0, msg, C.bright);
+    scr.text(x0 + Math.floor((w - msg.length) / 2), y0 + 2, msg, C.bright);
   }
   UPGRADES.forEach((u, i) => {
-    const r = y0 + 1 + i;
+    const r = y0 + 3 + i;
     const can = state.cents >= u.cost;
     const hi = i === state.sel;
     // too expensive: greyed out.  affordable: price in gold.  highlighted: reverse video.
