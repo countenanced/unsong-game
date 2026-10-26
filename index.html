@@ -8,7 +8,7 @@
   html, body { margin: 0; padding: 0; background: #000; height: 100%; overflow: hidden; }
   canvas#screen {
     display: block;
-    width: 100vw; height: 100vh;
+    position: absolute;            /* sized and centred by Screen.resize() */
     image-rendering: pixelated;
     image-rendering: crisp-edges;
     cursor: none;
@@ -33,7 +33,7 @@ const CFG = {
   fontFamily: '"Cascadia Mono", "Liberation Mono", "DejaVu Sans Mono", monospace',
   fontPx: 20,              // native render size; bigger = sharper after scaling
   lineHeight: 1.25,
-  cols: 96, rows: 30,      // fixed terminal size; scaled to fit the window
+  cols: 104, rows: 30,      // fixed terminal size; scaled to fit the window
   colors: {
     bg:        '#000000',
     fg:        '#c8c8c8',   // ordinary text
@@ -54,13 +54,22 @@ const CFG = {
     statusBg:  '#303030',   // the status bar under the input   // the grey consonants waiting to be overwritten
   },
   cents: 25,
+  bonusCents: 500,         // for matching an amulet's gematria
   holdMs: 1000,            // how long a finished word lingers before entering history
-  errBlankMs: 2000,        // after a mistake, silence this long blanks the box
-  hebCol: 12,              // width of the hebrew column on the left (letters hug its right edge)
-  gap: 3,                  // whitespace between the hebrew column and the romanization
-  romCol: 24,              // fixed width of the romanization column in the history
+  errBlankMs: 1000,        // after a mistake, silence this long blanks the box
+  hebCol: 10,              // width of the hebrew column on the left (letters hug its right edge)
+  gap: 2,                  // whitespace between columns
+  romCol: 17,              // fixed width of the romanization column in the history
   valCol: 4,               // width of the gematria column (right-aligned numbers)
+  earnCol: 5,              // "$5.25"
+  amuHebCol: 5,            // the matched amulet, hebrew (right-aligned)
+  amuGlossCol: 10,         // the matched amulet, glossed
+  amuletCaps: true,        // romanized amulets in caps like the words, or lowercase
+  matchHoldMs: 5000,       // the think lasts this long on a match, with the amulet lit the whole time
   inputMax: 40,            // how far a stray typist can run past the end of the word
+  sideCols: 38,            // width of the AMULETS side panel
+  amuletsShown: 5,
+  juice: 0.5,              // TEMPORARY: chance that a word is rigged to match an amulet (?juice=0 to disable)
   boxCols: 20,
   statusMsg: 'Speak slowly and enunciate.',             // fixed interior width of the input box (longest word is 16 letters)
 };
@@ -69,31 +78,36 @@ const CFG = {
 class Screen {
   constructor() {
     this.view = document.getElementById('screen');
-    this.off = document.createElement('canvas');
-    this.vctx = this.view.getContext('2d');
-    this.octx = this.off.getContext('2d');
+    this.ctx = this.view.getContext('2d');
     const q = new URLSearchParams(location.search);
     this.smooth = q.has('smooth');
     if (q.get('font')) CFG.fontPx = parseInt(q.get('font'), 10);   // dev: ?font=28
     if (q.get('cols')) CFG.cols = parseInt(q.get('cols'), 10);     // dev: ?cols=80&rows=24
     if (q.get('rows')) CFG.rows = parseInt(q.get('rows'), 10);
+    if (q.get('juice') != null) CFG.juice = parseFloat(q.get('juice'));
     this.resize();
   }
   resize() {
     const W = window.innerWidth, H = window.innerHeight;
-    this.view.width = W; this.view.height = H;
-    this.octx.font = `${CFG.fontPx}px ${CFG.fontFamily}`;
-    this.cw = Math.round(this.octx.measureText('M').width);
+    this.ctx.font = `${CFG.fontPx}px ${CFG.fontFamily}`;
+    this.cw = Math.round(this.ctx.measureText('M').width);
     this.ch = Math.round(CFG.fontPx * CFG.lineHeight);
     this.cols = CFG.cols; this.rows = CFG.rows;
-    this.off.width = this.cols * this.cw;
-    this.off.height = this.rows * this.ch;
-    // scale the fixed grid to fit the window, keeping aspect, letterboxed in black
-    const sc = Math.min(W / this.off.width, H / this.off.height);
-    this.dw = Math.round(this.off.width * sc); this.dh = Math.round(this.off.height * sc);
-    this.dx = Math.floor((W - this.dw) / 2); this.dy = Math.floor((H - this.dh) / 2);
+    // the canvas holds the grid at native resolution; CSS stretches it to fit
+    // the window (letterboxed), and the compositor does the nearest-neighbour
+    // upscale for free.  that uneven stretch is the aliasing we want.
+    this.view.width = this.cols * this.cw;
+    this.view.height = this.rows * this.ch;
+    const sc = Math.min(W / this.view.width, H / this.view.height);
+    const dw = Math.round(this.view.width * sc), dh = Math.round(this.view.height * sc);
+    this.view.style.width = dw + 'px'; this.view.style.height = dh + 'px';
+    this.view.style.left = Math.floor((W - dw) / 2) + 'px';
+    this.view.style.top = Math.floor((H - dh) / 2) + 'px';
     this.cells = new Array(this.cols * this.rows);
+    this.shown = new Array(this.cols * this.rows);   // what is currently painted
     this.clear();
+    this.ctx.fillStyle = CFG.colors.bg; this.ctx.fillRect(0, 0, this.view.width, this.view.height);
+    for (let i = 0; i < this.shown.length; i++) this.shown[i] = null;
   }
   clear() {
     for (let i = 0; i < this.cells.length; i++) this.cells[i] = null;
@@ -104,6 +118,7 @@ class Screen {
     this.cells[row * this.cols + col] = { ch, fg, bg, bold };
   }
   text(col, row, str, fg, bg, bold) {
+    str = str == null ? '' : String(str);
     for (let i = 0; i < str.length; i++) this.put(col + i, row, str[i], fg, bg, bold);
   }
   fill(col, row, w, h, ch, fg, bg) {
@@ -120,33 +135,35 @@ class Screen {
       this.text(col + 4, row, title, CFG.colors.bright, null, true);
     }
   }
+  static same(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return (!a || (a.ch === ' ' || !a.ch) && !a.bg) && (!b || (b.ch === ' ' || !b.ch) && !b.bg);
+    return a.ch === b.ch && a.fg === b.fg && a.bg === b.bg && !!a.bold === !!b.bold;
+  }
   render() {
-    const o = this.octx, W = this.off.width, H = this.off.height;
-    o.fillStyle = CFG.colors.bg; o.fillRect(0, 0, W, H);
+    // repaint only the cells that differ from what is on screen, like a
+    // terminal does.  the font is set only when it changes between cells.
+    const o = this.ctx, n = this.cells.length;
     o.textBaseline = 'middle';
     o.textAlign = 'center';
-    // offset so the grid is centred in the internal canvas
-    const ox = Math.floor((W - this.cols * this.cw) / 2);
-    const oy = Math.floor((H - this.rows * this.ch) / 2);
-    for (let r = 0; r < this.rows; r++) {
-      for (let c = 0; c < this.cols; c++) {
-        const cell = this.cells[r * this.cols + c];
-        if (!cell) continue;
-        const x = ox + c * this.cw, y = oy + r * this.ch;
-        if (cell.bg) { o.fillStyle = cell.bg; o.fillRect(x, y, this.cw, this.ch); }
-        if (cell.ch && cell.ch !== ' ') {
-          o.fillStyle = cell.fg;
-          o.font = `${cell.bold ? 'bold ' : ''}${CFG.fontPx}px ${CFG.fontFamily}`;
-          o.fillText(cell.ch, x + this.cw / 2, y + this.ch / 2 + 1);
-        }
+    let font = null, fg = null;
+    for (let i = 0; i < n; i++) {
+      const cell = this.cells[i], prev = this.shown[i];
+      if (Screen.same(cell, prev)) continue;
+      const c = i % this.cols, r = (i / this.cols) | 0;
+      const x = c * this.cw, y = r * this.ch;
+      o.fillStyle = (cell && cell.bg) || CFG.colors.bg;
+      o.fillRect(x, y, this.cw, this.ch);
+      fg = null;                                   // fillStyle is now the background colour
+      if (cell && cell.ch && cell.ch !== ' ') {
+        const f = cell.bold ? 'bold' : 'normal';
+        if (f !== font) { o.font = `${f} ${CFG.fontPx}px ${CFG.fontFamily}`; font = f; }
+        if (cell.fg !== fg) { o.fillStyle = cell.fg; fg = cell.fg; }
+        o.fillText(cell.ch, x + this.cw / 2, y + this.ch / 2 + 1);
       }
+      this.shown[i] = cell;
     }
-    // stretch to the window — this is where the aliasing comes from
-    const v = this.vctx;
-    v.fillStyle = CFG.colors.bg; v.fillRect(0, 0, this.view.width, this.view.height);
-    v.imageSmoothingEnabled = this.smooth;
     this.view.classList.toggle('smooth', this.smooth);
-    v.drawImage(this.off, 0, 0, W, H, this.dx, this.dy, this.dw, this.dh);
   }
 }
 
@@ -154,27 +171,27 @@ class Screen {
 // Stage 1 only: enough phonology to make the interface feel real.
 // We will replace this with the real conlang protocol together.
 const LETTERS = [
-  // heb, final form, hard rom, soft rom (begadkefat), weight, gematria value (standard)
-  { h: 'ב', f: 'ב', hard: 'b',  soft: 'v',  w: 3 , v: 2 },
-  { h: 'ג', f: 'ג', hard: 'g',  soft: 'g',  w: 2 , v: 3 },
-  { h: 'ד', f: 'ד', hard: 'd',  soft: 'd',  w: 3 , v: 4 },
-  { h: 'ה', f: 'ה', hard: 'h',  soft: 'h',  w: 2 , v: 5 },
-  { h: 'ו', f: 'ו', hard: 'v',  soft: 'v',  w: 2 , v: 6 },
-  { h: 'ז', f: 'ז', hard: 'z',  soft: 'z',  w: 2 , v: 7 },
-  { h: 'ח', f: 'ח', hard: 'ch', soft: 'ch', w: 2 , v: 8 },
-  { h: 'ט', f: 'ט', hard: 't',  soft: 't',  w: 2 , v: 9 },
-  { h: 'י', f: 'י', hard: 'y',  soft: 'y',  w: 2 , v: 10 },
-  { h: 'כ', f: 'ך', hard: 'k',  soft: 'kh', w: 3 , v: 20 },
-  { h: 'ל', f: 'ל', hard: 'l',  soft: 'l',  w: 4 , v: 30 },
-  { h: 'מ', f: 'ם', hard: 'm',  soft: 'm',  w: 4 , v: 40 },
-  { h: 'נ', f: 'ן', hard: 'n',  soft: 'n',  w: 4 , v: 50 },
-  { h: 'ס', f: 'ס', hard: 's',  soft: 's',  w: 2 , v: 60 },
-  { h: 'פ', f: 'ף', hard: 'p',  soft: 'f',  w: 2 , v: 80 },
-  { h: 'צ', f: 'ץ', hard: 'ts', soft: 'ts', w: 2 , v: 90 },
-  { h: 'ק', f: 'ק', hard: 'k',  soft: 'k',  w: 2 , v: 100 },
-  { h: 'ר', f: 'ר', hard: 'r',  soft: 'r',  w: 4 , v: 200 },
-  { h: 'ש', f: 'ש', hard: 'sh', soft: 'sh', w: 3 , v: 300 },
-  { h: 'ת', f: 'ת', hard: 't',  soft: 't',  w: 3 , v: 400 },
+  // heb, final form, hard rom, soft rom (begadkefat), weight
+  { h: 'ב', f: 'ב', hard: 'b',  soft: 'v',  w: 3  },
+  { h: 'ג', f: 'ג', hard: 'g',  soft: 'g',  w: 2  },
+  { h: 'ד', f: 'ד', hard: 'd',  soft: 'd',  w: 3  },
+  { h: 'ה', f: 'ה', hard: 'h',  soft: 'h',  w: 2  },
+  { h: 'ו', f: 'ו', hard: 'v',  soft: 'v',  w: 2  },
+  { h: 'ז', f: 'ז', hard: 'z',  soft: 'z',  w: 2  },
+  { h: 'ח', f: 'ח', hard: 'ch', soft: 'ch', w: 2  },
+  { h: 'ט', f: 'ט', hard: 't',  soft: 't',  w: 2  },
+  { h: 'י', f: 'י', hard: 'y',  soft: 'y',  w: 2  },
+  { h: 'כ', f: 'ך', hard: 'k',  soft: 'kh', w: 3  },
+  { h: 'ל', f: 'ל', hard: 'l',  soft: 'l',  w: 4  },
+  { h: 'מ', f: 'ם', hard: 'm',  soft: 'm',  w: 4  },
+  { h: 'נ', f: 'ן', hard: 'n',  soft: 'n',  w: 4  },
+  { h: 'ס', f: 'ס', hard: 's',  soft: 's',  w: 2  },
+  { h: 'פ', f: 'ף', hard: 'p',  soft: 'f',  w: 2  },
+  { h: 'צ', f: 'ץ', hard: 'ts', soft: 'ts', w: 2  },
+  { h: 'ק', f: 'ק', hard: 'k',  soft: 'k',  w: 2  },
+  { h: 'ר', f: 'ר', hard: 'r',  soft: 'r',  w: 4  },
+  { h: 'ש', f: 'ש', hard: 'sh', soft: 'sh', w: 3  },
+  { h: 'ת', f: 'ת', hard: 't',  soft: 't',  w: 3  },
 ];
 const VOWELS = ['a', 'a', 'a', 'e', 'e', 'i', 'o', 'u'];
 const rnd = n => Math.floor(Math.random() * n);
@@ -213,11 +230,65 @@ function makeWord() {
   return segs;
 }
 
+// ---------- amulets ----------
+// standard counting over the full alphabet (finals count as their base letter)
+const GEMATRIA = { 'א':1,'ב':2,'ג':3,'ד':4,'ה':5,'ו':6,'ז':7,'ח':8,'ט':9,'י':10,'כ':20,'ך':20,'ל':30,
+  'מ':40,'ם':40,'נ':50,'ן':50,'ס':60,'ע':70,'פ':80,'ף':80,'צ':90,'ץ':90,'ק':100,'ר':200,'ש':300,'ת':400 };
+const gval = str => [...str].reduce((a, ch) => a + (GEMATRIA[ch] || 0), 0);
+// what a typed latin letter would have been in hebrew, for scoring mistakes.
+// digraphs first so that SH is one letter, not S and H.
+const ROM_TO_HEB = { sh: 'ש', ts: 'צ', ch: 'ח', kh: 'כ', b: 'ב', g: 'ג', d: 'ד', h: 'ה', v: 'ו', w: 'ו',
+  z: 'ז', t: 'ת', y: 'י', j: 'י', k: 'כ', c: 'כ', q: 'ק', l: 'ל', m: 'מ', n: 'נ', s: 'ס', p: 'פ', f: 'פ', r: 'ר', x: 'ס' };
+function romToHeb(str) {
+  let out = '';
+  for (let i = 0; i < str.length; i++) {
+    const two = str.slice(i, i + 2);
+    if (ROM_TO_HEB[two]) { out += ROM_TO_HEB[two]; i++; }
+    else if (ROM_TO_HEB[str[i]]) out += ROM_TO_HEB[str[i]];
+  }
+  return out;
+}
+// the pool: natural things and mystical abstractions.  to be brainstormed further.
+const AMULET_POOL = [
+  // hebrew, romanization (in the game's syllable style), gloss
+  ['שמים', 'sha-ma-yim', 'sky'],     ['גבול', 'gvul', 'boundary'],    ['ירח', 'ya-re-ach', 'moon'],
+  ['סוד', 'sod', 'secret'],          ['אבדן', 'ov-dan', 'loss'],      ['זכרון', 'zi-ka-ron', 'memory'],
+  ['פנים', 'pa-nim', 'face'],        ['קול', 'kol', 'voice'],         ['אור', 'or', 'light'],
+  ['רוח', 'ru-ach', 'wind'],         ['דממה', 'dma-ma', 'silence'],   ['שער', 'sha-ar', 'gate'],
+  ['חי', 'chai', 'alive'],           ['אהבה', 'a-ha-va', 'love'],     ['אמת', 'e-met', 'truth'],
+  ['שם', 'shem', 'name'],            ['עפר', 'a-far', 'dust'],        ['מים', 'ma-yim', 'water'],
+  ['אש', 'esh', 'fire'],             ['לב', 'lev', 'heart'],          ['חלום', 'cha-lom', 'dream'],
+  ['צל', 'tsel', 'shadow'],          ['דרך', 'de-rech', 'way'],       ['כוכב', 'ko-chav', 'star'],
+  ['ים', 'yam', 'sea'],              ['עין', 'a-yin', 'eye'],         ['אבן', 'e-ven', 'stone'],
+  ['מלח', 'me-lach', 'salt'],      ['טל', 'tal', 'dew'],            ['תהום', 'te-hom', 'the deep'],
+  // the kabbalists' own vocabulary
+  ['כתר', 'ke-ter', 'crown'],      ['חכמה', 'chokh-ma', 'wisdom'],  ['בינה', 'bi-na', 'discernment'],
+  ['חסד', 'che-sed', 'kindness'],  ['גבורה', 'gvu-ra', 'severity'], ['נצח', 'ne-tsach', 'eternity'],
+  ['הוד', 'hod', 'splendor'],      ['יסוד', 'ye-sod', 'foundation'],['מלכות', 'mal-khut', 'kingdom'],
+  ['דעת', 'da-at', 'knowledge'],   ['שכינה', 'shkhi-na', 'presence'],['צמצום', 'tsim-tsum', 'contraction'],
+  ['תיקון', 'ti-kun', 'repair'],   ['קליפה', 'kli-pa', 'husk'],     ['נשמה', 'nsha-ma', 'soul'],
+  ['נפש', 'ne-fesh', 'self'],      ['עולם', 'o-lam', 'world'],      ['מרכבה', 'mer-ka-va', 'chariot'],
+  ['היכל', 'hei-khal', 'palace'],  ['שרפים', 'sra-fim', 'seraphim'],['גלם', 'go-lem', 'golem'],
+  ['אות', 'ot', 'letter'],         ['תהו', 'to-hu', 'chaos'],       ['בהו', 'bo-hu', 'void'],
+  ['כבוד', 'ka-vod', 'glory'],     ['גלגול', 'gil-gul', 'rebirth'], ['יחוד', 'yi-chud', 'union'],
+].map(([heb, rom, gloss]) => ({ heb, rom, gloss, val: gval(heb) }));
+const amuletRom = a => CFG.amuletCaps ? a.rom.toUpperCase() : a.rom;
+
+function drawAmulets(n) {
+  // n fresh amulets not currently shown, kept in ascending gematria order
+  const have = new Set(state.amulets.map(a => a.heb));
+  const vals = new Set(state.amulets.map(a => a.val));
+  const pool = AMULET_POOL.filter(a => !have.has(a.heb) && !vals.has(a.val));
+  for (let i = 0; i < n && pool.length; i++) state.amulets.push(pool.splice(rnd(pool.length), 1)[0]);
+  state.amulets.sort((a, b) => a.val - b.val);
+}
+
 // ---------- the SPEAK tab ----------
 const state = {
   tab: 'SPEAK',
-  tabs: ['SPEAK', 'UPGRADE'],
+  tabs: ['SPEAK', 'UPGRADE', 'OFFICE'],
   cents: 0,
+  amulets: [],             // the five currently on offer
   intro: [],               // the welcome, pinned at the top
   log: [],                 // history lines: {text, fg, bold, heb}
   word: null,
@@ -228,6 +299,7 @@ const state = {
   errTyped: [],            // what was typed since the error, shown in red
   errTimer: null,
   holding: false,          // word finished; pausing before it goes into history
+  matchHold: false,        // ...and that word matched an amulet
   holdTicks: 0,
   blinkOn: true,
 };
@@ -246,13 +318,21 @@ const INTRO = [
   '╚════════════════════════════════════════════════╝',
 ];
 
-function logLine(text, fg = CFG.colors.fg, bold = false, heb = null, val = null) {
-  state.log.push({ text, fg, bold, heb, val });
+function logLine(text, fg = CFG.colors.fg, bold = false, heb = null, val = null, earned = null, amulet = null) {
+  state.log.push({ text, fg, bold, heb, val, earned, amulet });
   if (state.log.length > 500) state.log.shift();
 }
 
 function newWord() {
   state.word = makeWord();
+  if (Math.random() < CFG.juice) {
+    // rigged: keep rolling until a word lands on one of the amulets on offer
+    const targets = new Set(state.amulets.map(a => a.val));
+    for (let i = 0; i < 5000; i++) {
+      const w = makeWord();
+      if (targets.has(gematria(w))) { state.word = w; break; }
+    }
+  }
   state.cons = [];
   state.word.forEach((s, i) => { if (s.t === 'C' && !s.silent) state.cons.push({ rom: s.rom, segIndex: i }); });
   state.ci = 0; state.li = 0;
@@ -262,25 +342,42 @@ function romanization(word) {
   return word.map(s => s.t === '-' ? '-' : s.rom).join('').toUpperCase();
 }
 function gematria(word) {
-  return word.filter(s => s.t === 'C').reduce((sum, s) => sum + (s.L ? s.L.v : 0), 0);
+  return gval(hebrew(word));             // scored exactly as the amulets are
 }
 function hebrew(word) {
   return word.filter(s => s.t === 'C').map(s => s.heb).join('');
 }
 // draw a hebrew string right-aligned so that its right edge sits at column `right`
-function putHebrew(right, row, str, fg, bold) {
-  [...str].forEach((ch, i) => scr.put(right - i, row, ch, fg, null, bold));
+function putHebrew(right, row, str, fg, bgOrBold, bold) {
+  // putHebrew(right, row, str, fg, bold) or putHebrew(right, row, str, fg, bg, bold)
+  const bg = typeof bgOrBold === 'string' ? bgOrBold : null;
+  if (typeof bgOrBold === 'boolean') bold = bgOrBold;
+  [...str].forEach((ch, i) => scr.put(right - i, row, ch, fg, bg, bold));
 }
 
 function speakSuccess() {
+  // the machine "thinks" about the word.  a match is known at once: the amulet
+  // lights up for the whole (longer) think, then the ledger and the money land.
+  const val = gematria(state.word);
+  const a = state.amulets.find(x => x.val === val && !x.won);
+  if (a) a.won = true;
+  state.matchHold = !!a;                   // the input row lights up alongside the amulet
   state.holding = true; state.holdTicks = 0;
   setTimeout(() => {
-    state.cents += CFG.cents;
-    logLine(`  ${romanization(state.word)}`, CFG.colors.fg, false, hebrew(state.word), gematria(state.word));
-    state.holding = false;
+    const earned = CFG.cents + (a ? CFG.bonusCents : 0);
+    state.cents += earned;
+    logLine(`  ${romanization(state.word)}`, CFG.colors.fg, false, hebrew(state.word), val, earned,
+            a ? { heb: a.heb, gloss: a.gloss } : null);
+    if (a) {                               // the claimed amulet is replaced
+      state.amulets = state.amulets.filter(x => x !== a);
+      delete a.won;
+      drawAmulets(1);
+    }
+    state.holding = false; state.matchHold = false;
     newWord();
+    save();
     draw();
-  }, CFG.holdMs);
+  }, a ? CFG.matchHoldMs : CFG.holdMs);
 }
 
 function clearBox() {
@@ -332,6 +429,7 @@ function handleKey(e) {
 // ---------- drawing ----------
 function drawSpeak(x0, y0, w, h) {
   const C = CFG.colors;
+  // (column widths above are chosen so the six history columns fit the panel)
   // the prompt block takes the bottom 5 rows of the panel interior
   const promptRows = 5;      // divider, prompt row, input row, blank, status line
   const logRows = h - promptRows;
@@ -350,11 +448,22 @@ function drawSpeak(x0, y0, w, h) {
   for (const ln of state.log) {
     if (r < y0) { r++; continue; }
     if (ln.heb) {
-      putHebrew(x0 + CFG.hebCol - 1, r, ln.heb, ln.fg, ln.bold);
-      scr.text(x0 + CFG.hebCol + CFG.gap, r, ln.text.trim(), ln.fg, null, ln.bold);
-      if (ln.val != null) {
-        const v = String(ln.val);
-        scr.text(x0 + CFG.hebCol + CFG.gap + CFG.romCol + CFG.gap + (CFG.valCol - v.length), r, v, ln.fg, null, ln.bold);
+      // columns: gematria | hebrew | romanization | earned | amulet hebrew | amulet gloss
+      // (same order as the amulet panel: number, hebrew, then the rest)
+      let cx = x0;
+      if (ln.val != null) { const v = String(ln.val); scr.text(cx + CFG.valCol - v.length, r, v, ln.fg); }
+      cx += CFG.valCol + CFG.gap;
+      putHebrew(cx + CFG.hebCol - 1, r, ln.heb, ln.fg, ln.bold);            cx += CFG.hebCol + CFG.gap;
+      scr.text(cx, r, ln.text.trim(), ln.fg, null, ln.bold);                cx += CFG.romCol + CFG.gap;
+      if (ln.earned != null) {
+        // "$ .25" for small change so that "$5.25" stands out
+        const e = ln.earned < 100 ? `$ ${(ln.earned / 100).toFixed(2).slice(1)}` : `$${(ln.earned / 100).toFixed(2)}`;
+        scr.text(cx + CFG.earnCol - e.length, r, e, ln.amulet ? C.money : ln.fg, null, !!ln.amulet);
+      }
+      cx += CFG.earnCol + CFG.gap;
+      if (ln.amulet) {
+        putHebrew(cx + CFG.amuHebCol - 1, r, ln.amulet.heb || '', C.money, true);  cx += CFG.amuHebCol + CFG.gap;
+        scr.text(cx, r, ln.amulet.gloss || ln.amulet.rom || '', C.money, null, true);
       }
     } else scr.text(x0, r, ln.text.slice(0, w), ln.fg, null, ln.bold);
     r++;
@@ -373,7 +482,20 @@ function drawSpeak(x0, y0, w, h) {
   // --- hebrew line (right to left) ---
   const hebSegs = word.filter(s => s.t === 'C');
   const n = hebSegs.length;
-  const hx = x0 + CFG.hebCol - 1;                     // right edge of the hebrew column
+  // the number column shows a running gematria of what has been spoken so
+  // far, in exactly the spot the final sum will occupy once the row moves up
+  // into history.  (experimental: nothing is shown before the first letter.)
+  // on a match the whole prompt row lights up, in step with the amulet's row
+  const lit = state.matchHold ? C.money : null;
+  if (lit) scr.fill(x0, py, w, 1, ' ', C.bg, lit);
+  if (state.ci > 0 || state.holding || state.err) {
+    const spokenHeb = state.cons.slice(0, state.ci).map(c => word[c.segIndex].heb).join('');
+    // mistakes count too: stray letters are scored as the hebrew they would have been
+    const strayHeb = state.err ? romToHeb(state.errTyped.join('')) : '';
+    const v = String(gval(spokenHeb + strayHeb));
+    scr.text(x0 + CFG.valCol - v.length, py, v, lit ? C.bg : state.err ? C.bad : C.fg, lit, !!lit);
+  }
+  const hx = x0 + CFG.valCol + CFG.gap + CFG.hebCol - 1;   // right edge of the hebrew column (after the gematria column)
   hebSegs.forEach((s, i) => {
     const col = hx - i;                               // reading order runs right→left
     const k = state.cons.findIndex(c => c.segIndex === word.indexOf(s));
@@ -382,7 +504,7 @@ function drawSpeak(x0, y0, w, h) {
     else if (k < state.ci) fg = C.dim;
     else if (k === state.ci) { fg = C.primary; bold = true; }
     else fg = C.secondary;
-    scr.put(col, py, s.heb, fg, null, bold);     // same row as the romanization
+    scr.put(col, py, s.heb, lit ? C.bg : fg, lit, lit ? true : bold);     // same row as the romanization
   });
 
   // --- romanization line ---
@@ -402,8 +524,8 @@ function drawSpeak(x0, y0, w, h) {
       });
     }
   }
-  const rx = x0 + CFG.hebCol + CFG.gap;
-  rom.forEach((c, i) => scr.put(rx + i, py, c.ch, c.fg, null, c.bold));
+  const rx = hx + 1 + CFG.gap;
+  rom.forEach((c, i) => scr.put(rx + i, py, c.ch, lit ? C.bg : c.fg, lit, lit ? true : c.bold));
 
   // --- input box: ghost consonants in grey that you overwrite as you type ---
   const inp = [];
@@ -442,6 +564,11 @@ function drawSpeak(x0, y0, w, h) {
     const c = inp[cursorAt];
     scr.put(ix + cursorAt, iy, c.ch, C.bg, state.err ? C.bad : C.fg, c.bold);
   }
+  // running total, in the money column, on the row above the status bar
+  const money = `$${(state.cents / 100).toFixed(2)}`;
+  const earnRight = x0 + CFG.valCol + CFG.gap + CFG.hebCol + CFG.gap + CFG.romCol + CFG.gap + CFG.earnCol;
+  scr.text(earnRight - money.length, py + 2, money, C.money, null, true);
+
   // status bar: a background-coloured line with a red MIC indicator
   const sy = py + 3;
   scr.fill(x0, sy, w, 1, ' ', C.fg, C.statusBg);
@@ -455,26 +582,58 @@ function drawSpeak(x0, y0, w, h) {
   }
 }
 
+function drawSide(x0, y0, w, h) {
+  const C = CFG.colors;
+  scr.text(x0, y0, `$${(CFG.bonusCents / 100).toFixed(2)} BONUS WHEN YOUR WORD`, C.fg, null, true);
+  scr.text(x0, y0 + 1, 'MATCHES GEMATRIA NUMBER', C.fg, null, true);
+  state.amulets.forEach((a, i) => {
+    const r = y0 + 3 + i;
+    const v = String(a.val);
+    const bg = a.won ? C.money : null;                 // solid highlight while it is being claimed
+    if (bg) scr.fill(x0, r, w, 1, ' ', C.bg, bg);
+    scr.text(x0 + 3 - v.length, r, v, bg ? C.bg : C.money, bg, true);
+    putHebrew(x0 + 9, r, a.heb, bg ? C.bg : C.bright, bg, true);
+    scr.text(x0 + 11, r, amuletRom(a), bg ? C.bg : C.fg, bg);
+    scr.text(x0 + 22, r, a.gloss, bg ? C.bg : C.fg, bg);
+  });
+}
+
 function drawUpgrade(x0, y0, w, h) {
   scr.text(x0 + 1, y0 + 1, 'nothing to upgrade yet.', CFG.colors.fg);
 }
 
+function drawOffice(x0, y0, w, h) {
+  scr.text(x0 + 1, y0 + 1, 'Your office has no decorations.', CFG.colors.fg);
+}
+
+let drawPending = false;
+let perfMsg = null;        // dev: shown on the title row when ?perf is used
 function draw() {
+  // many callers, one paint per frame
+  if (drawPending) return;
+  drawPending = true;
+  requestAnimationFrame(() => { drawPending = false; drawNow(); });
+}
+function drawNow() {
   const C = CFG.colors;
   scr.clear();
   const cols = scr.cols, rows = scr.rows;
 
   // title row
   scr.text(1, 0, 'countenance', C.fg);
-  const money = `$${(state.cents / 100).toFixed(2)}`;
-  scr.text(1, rows - 2, money, C.money, null, true);
+  if (perfMsg) scr.text(20, 0, perfMsg, C.bad, null, true);
 
-  // main panel
-  const px = 0, py = 1, pw = cols, ph = rows - 3;
+  // main panel, with a side panel on the right while speaking
+  const side = state.tab === 'SPEAK' ? CFG.sideCols : 0;
+  const px = 0, py = 1, pw = cols - side, ph = rows - 3;
   scr.box(px, py, pw, ph, state.tab);
   const ix = px + 2, iy = py + 1, iw = pw - 4, ih = ph - 2;
-  if (state.tab === 'SPEAK') drawSpeak(ix, iy, iw, ih);
-  else drawUpgrade(ix, iy, iw, ih);
+  if (state.tab === 'SPEAK') {
+    drawSpeak(ix, iy, iw, ih);
+    scr.box(pw, py, side, ph, 'AMULETS');
+    drawSide(pw + 2, iy, side - 4, ih);
+  } else if (state.tab === 'UPGRADE') drawUpgrade(ix, iy, iw, ih);
+  else drawOffice(ix, iy, iw, ih);
 
   // tab bar
   const ty = rows - 1;
@@ -492,15 +651,49 @@ function draw() {
   scr.render();
 }
 
+// ---------- persistence ----------
+const SAVE_KEY = 'countenance.v3';   // bump when the saved shape changes
+function save() {
+  try {
+    localStorage.setItem(SAVE_KEY, JSON.stringify({
+      cents: state.cents, amulets: state.amulets.map(a => a.heb), log: state.log.slice(-200),
+    }));
+  } catch (e) { /* private window or storage disabled: play on without memory */ }
+}
+function load() {
+  try {
+    if (new URLSearchParams(location.search).has('reset')) { localStorage.removeItem(SAVE_KEY); return false; }
+    const d = JSON.parse(localStorage.getItem(SAVE_KEY));
+    if (!d) return false;
+    state.cents = d.cents || 0;
+    state.amulets = (d.amulets || []).map(h => AMULET_POOL.find(a => a.heb === h)).filter(Boolean);
+    state.log = d.log || [];
+    return true;
+  } catch (e) { return false; }
+}
+
 // ---------- boot ----------
 const scr = new Screen();
 window.addEventListener('resize', () => { scr.resize(); draw(); });
 window.addEventListener('keydown', e => { handleKey(e); draw(); });
+window.addEventListener('error', e => {
+  // last resort: show the fault on screen rather than a black page
+  scr.clear();
+  scr.text(1, 1, 'countenance fault: ' + e.message, CFG.colors.bad, null, true);
+  scr.text(1, 3, 'add ?reset to the address to clear the saved game', CFG.colors.fg);
+  scr.render();
+});
 
 state.intro = INTRO.map(l => '  ' + l);
+load();
+drawAmulets(CFG.amuletsShown - state.amulets.length);
 { // dev: ?demo=N pre-fills N spoken words so the scrolling can be inspected
   const n = parseInt(new URLSearchParams(location.search).get('demo') || '0', 10);
-  for (let i = 0; i < n; i++) { const wd = makeWord(); logLine(`  ${romanization(wd)}`, CFG.colors.fg, false, hebrew(wd), gematria(wd)); }
+  for (let i = 0; i < n; i++) {
+    const wd = makeWord(), a = i === n - 2 ? pick(AMULET_POOL) : null;   // one fake match, for layout
+    logLine(`  ${romanization(wd)}`, CFG.colors.fg, false, hebrew(wd), gematria(wd),
+            CFG.cents + (a ? CFG.bonusCents : 0), a ? { heb: a.heb, gloss: a.gloss } : null);
+  }
 }
 newWord();
 
@@ -514,6 +707,14 @@ setInterval(() => {
 
 document.fonts.ready.then(() => { scr.resize(); draw(); });
 draw();
+if (new URLSearchParams(location.search).has('perf')) {
+  // dev: time 200 full redraws and show the average in the title bar
+  const t0 = performance.now();
+  for (let i = 0; i < 200; i++) drawNow();
+  perfMsg = `draw ${((performance.now() - t0) / 200).toFixed(2)} ms`;
+  document.title = perfMsg;
+  draw();
+}
 </script>
 </body>
 </html>
