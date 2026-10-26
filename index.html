@@ -845,7 +845,11 @@ function save() {
 }
 function load() {
   try {
-    if (new URLSearchParams(location.search).has('reset')) { localStorage.removeItem(SAVE_KEY); return false; }
+    if (new URLSearchParams(location.search).has('reset')) {
+      localStorage.removeItem(SAVE_KEY);
+      history.replaceState(null, '', location.pathname);   // drop ?reset so a reload keeps the fresh game
+      return false;
+    }
     const d = JSON.parse(localStorage.getItem(SAVE_KEY));
     if (!d) return false;
     state.cents = d.cents || 0;
