@@ -295,6 +295,13 @@ function replenishAmulets() {
   state.amulets.sort((a, b) => a.val - b.val);
 }
 
+// money changes go through here so the UPGRADE tab can notice a price being crossed
+function earn(delta) {
+  const before = UPGRADES.filter(u => state.cents >= u.cost).length;
+  state.cents += delta;
+  const after = UPGRADES.filter(u => state.cents >= u.cost).length;
+  if (after > before) state.tabBlink = 6;             // three blinks, in time with the cursor
+}
 const fmtMoney = c => (c < 0 ? '-' : '') + '$' + (Math.abs(c) / 100).toFixed(2);
 
 // ---------- upgrades ----------
@@ -321,6 +328,7 @@ const state = {
   typed: [],               // every consonant key of the current attempt, right or wrong
   modal: null,             // a notice that seizes the screen until a key is pressed
   infractions: 0,          // the permanent record
+  tabBlink: 0,             // half-blinks left on the UPGRADE tab after money crosses a price
   intro: [],               // the welcome, pinned at the top
   log: [],                 // history lines: {text, fg, bold, heb}
   word: null,
@@ -427,7 +435,7 @@ function speakSuccess() {
   setTimeout(() => {
     if (state.modal) return;               // seized mid-think: the word is forfeit
     const earned = state.word.free ? 0 : CFG.cents + (a ? CFG.bonusCents : 0);
-    state.cents += earned;
+    earn(earned);
     if (state.word.free) {
       const u = UPGRADES.find(x => x.id === state.word.grants);
       const label = (u ? u.title : 'contract').replace(/\s*©.*$/, '').toUpperCase();   // "WAKING WORD"
@@ -487,7 +495,7 @@ const modalVisible = () => state.modal && Date.now() >= (state.modal.showAt || 0
 function applyViolation(m) {
   // the fine and the record land the moment the notice appears, once
   const u = UPGRADES.find(x => x.id === m.id);
-  state.cents -= u.penalty;
+  earn(-u.penalty);
   state.infractions++;
   logLine(`  ${u.rom.toUpperCase()}`, CFG.colors.bad, true, u.heb, gval(u.heb), -u.penalty);
   m.applied = true;
@@ -532,7 +540,7 @@ function handleKey(e) {
     else if (e.key === 'Enter') {
       const u = UPGRADES[state.sel];
       if (u && state.cents >= u.cost) {
-        state.cents -= u.cost;
+        earn(-u.cost);
         if (!state.owned.includes(u.id)) state.owned.push(u.id);
         state.pending[u.id] = (state.pending[u.id] || 0) + (u.charges || 0);
         // you are sent back to speak the word you just bought.  nothing is
@@ -870,7 +878,7 @@ function drawNow() {
   let tx = 1;
   for (const t of state.tabs) {
     const label = ` ${t} `;
-    const active = t === state.tab;
+    const active = t === state.tab || (t === 'UPGRADE' && state.tabBlink > 0 && state.blinkOn);
     scr.text(tx, ty, label, active ? C.tabActFg : C.tabFg, active ? C.tabActBg : C.tabBg, active);
     tx += label.length + 1;
   }
@@ -943,7 +951,8 @@ replenishAmulets();
 newWord();
 
 setInterval(() => {
-  state.blinkOn = !state.blinkOn;      // 1 Hz: the cursor, and the notice's flash
+  state.blinkOn = !state.blinkOn;      // 1 Hz: the cursor, the notice's flash, the UPGRADE tab's nudge
+  if (state.tabBlink > 0) state.tabBlink--;
   draw();
 }, 500);
 setInterval(() => {
