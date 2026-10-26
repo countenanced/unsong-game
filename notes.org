@@ -1,0 +1,71 @@
+1. This project has several components, and I'll start with some of the first.
+2. It is designed to be an ncurses interface in the browser.
+3. Not just sort of like ncurses, but ideally faithful enough to be
+   plausible.
+4. We can pick a monospace typeface together.
+5. I imagine rendering it slightly smaller than the screen (maybe a
+   uniform 64 px shorter, or maybe just a fixed width and height) and
+   then scaling it to get the alias effect. I don't want elaborate CRT
+   graphical effects, but I do want the imperfect scaling.
+6. I picture most of the screen being black. Probably we will have
+   curses-style panels; using box printing characters would be cool
+   but if it is possible to fake accurately and efficiently in css you
+   may. Across the bottom of this application are tabs in a suitable
+   background color with white text. The first tab is the main tab and
+   is SPEAK. The next tab is UPGRADE. I am not sure about the
+   remaining tabs yet.
+7. The typeface must support hebrew letters.
+8. The gist of the SPEAK tab is that the program will generate
+   phonetically plausible in hebrew combinations of hebrew letters. We
+   can decide on a conlang generation protocol together, including
+   begadkefat spirantization and so on. There will be some amount of
+   local search (e.g. several words in sequence with just the final
+   letter changed) and then some bigger jumps. The algorithmic details
+   matter so we should talk them through together, but in the first
+   stage we should focus on getting the look and feel of the interface
+   correct before we fill it in with real material.
+9. The program generates a word. hebrew on one line, romanization on
+   the next line such as AR-ASH-KON-CHEL-NA-VAN-TSIR. This is the
+   prompt.
+10. The user's job is to type the word that they're given. This is
+    "speaking" the word. I imagine the user only has to type the
+    consonants of these words, abjad style. I imagine the consonant
+    they have to type next has some sort of primary emphasis (e.g. the
+    hebrew consonant is done in a particular type or color, and the
+    corresponding consonant cluster in the romanization also gets that
+    styling. If the consonant cluster in english has multiple letters
+    like the tsadi in TSIR, TS both have to be typed and both of them
+    get primary emphasis. The rest of the consonants in the
+    romanization get secondary emphasis. For example, in
+    AR-ASH-KON-CHEL-NA-VAN-TSIR, we'd give primary highlighting to R
+    at first, and secondary highlighting to all of SH K N CH L N V N
+    TS R. When a consonant is typed, I imagine it goes back to
+    ordinary highlighting.
+11. You don't have to hit enter to submit your typing. It just
+    automatically gets submitted, like certain two factor codes.
+12. Come to think of it, it might be nice if even though we're in a
+    curses style interface, if your input prompt is made of grey(?)
+    monospace rectangles the length of each of the consonant clusters
+    and as you type you're overwriting them with letters. like for the
+    ar-ash-...-tsir example, your input would look like _-__-_ _-__
+    _-_-_ _-__ _.  I'm not sure if we want the hyphens or not. I'm not
+    sure if the monospace rectangles are a good idea or not.
+13. In fact the purpose of this first stage is rapid prototyping and
+    iteration as we work on what looks good together. I expect to
+    deeply value the work that we create together, but also want to
+    set the expectation that I will probably scrap the first few
+    versions as we learn more, and do them over from scratch.
+14. Some linux programs open up with an ascii art box and the program
+    title and description. I'd like to do that for countenance when
+    you load the page for the first time, like the first thing it
+    prints in the pseudo-terminal window on SPEAK is the intro thing.
+15. Points are kept in the upper right corner. Maybe currency
+    actually, and each word you type successfully nets 5 cents.
+16. I am not sure what happens if you type things wrong, what the gui
+    should look like. You should have to start over since in the
+    context of this, typing is an analogue to speaking aloud.
+18. I want to edit this project jointly with my friend who has a
+    github account. I don't have a github account but I can get one. I
+    want my git username for this project and only this project to be
+    leylinear@gmail.com and for my name to be Leyline. We can do that
+    later.

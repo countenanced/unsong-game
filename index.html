@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>countenance</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; height: 100%; overflow: hidden; }
+  canvas#screen {
+    display: block;
+    width: 100vw; height: 100vh;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    cursor: none;
+  }
+  canvas#screen.smooth { image-rendering: auto; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<script>
+'use strict';
+
+/* ============================================================
+   countenance — stage 1 prototype
+   A fake curses terminal: a cell grid drawn to an offscreen canvas
+   at (window - 64px) and then stretched to the window with
+   nearest-neighbour scaling so the pixels come out a little uneven.
+   ============================================================ */
+
+// ---------- configuration ----------
+const CFG = {
+  fontFamily: '"Cascadia Mono", "Liberation Mono", "DejaVu Sans Mono", monospace',
+  fontPx: 20,              // native render size; bigger = sharper after scaling
+  lineHeight: 1.25,
+  cols: 96, rows: 30,      // fixed terminal size; scaled to fit the window
+  colors: {
+    bg:        '#000000',
+    fg:        '#c8c8c8',   // ordinary text
+    dim:       '#5a5a5a',   // typed / spent
+    bright:    '#ffffff',
+    primary:   '#ffd75f',   // the consonant you must type next
+    secondary: '#e4e4e4',   // consonants still to come
+    vowel:     '#8a8a8a',
+    border:    '#8a8a8a',
+    tabBg:     '#1c3f95',
+    tabFg:     '#ffffff',
+    tabActBg:  '#ffffff',
+    tabActFg:  '#1c3f95',
+    money:     '#ffd75f',
+    ok:        '#5faf5f',
+    bad:       '#d75f5f',
+    ghost:     '#6a6a6a',
+    statusBg:  '#303030',   // the status bar under the input   // the grey consonants waiting to be overwritten
+  },
+  cents: 25,
+  holdMs: 1000,            // how long a finished word lingers before entering history
+  errBlankMs: 2000,        // after a mistake, silence this long blanks the box
+  hebCol: 12,              // width of the hebrew column on the left (letters hug its right edge)
+  gap: 3,                  // whitespace between the hebrew column and the romanization
+  romCol: 24,              // fixed width of the romanization column in the history
+  valCol: 4,               // width of the gematria column (right-aligned numbers)
+  inputMax: 40,            // how far a stray typist can run past the end of the word
+  boxCols: 20,
+  statusMsg: 'Speak slowly and enunciate.',             // fixed interior width of the input box (longest word is 16 letters)
+};
+
+// ---------- the screen (cell grid) ----------
+class Screen {
+  constructor() {
+    this.view = document.getElementById('screen');
+    this.off = document.createElement('canvas');
+    this.vctx = this.view.getContext('2d');
+    this.octx = this.off.getContext('2d');
+    const q = new URLSearchParams(location.search);
+    this.smooth = q.has('smooth');
+    if (q.get('font')) CFG.fontPx = parseInt(q.get('font'), 10);   // dev: ?font=28
+    if (q.get('cols')) CFG.cols = parseInt(q.get('cols'), 10);     // dev: ?cols=80&rows=24
+    if (q.get('rows')) CFG.rows = parseInt(q.get('rows'), 10);
+    this.resize();
+  }
+  resize() {
+    const W = window.innerWidth, H = window.innerHeight;
+    this.view.width = W; this.view.height = H;
+    this.octx.font = `${CFG.fontPx}px ${CFG.fontFamily}`;
+    this.cw = Math.round(this.octx.measureText('M').width);
+    this.ch = Math.round(CFG.fontPx * CFG.lineHeight);
+    this.cols = CFG.cols; this.rows = CFG.rows;
+    this.off.width = this.cols * this.cw;
+    this.off.height = this.rows * this.ch;
+    // scale the fixed grid to fit the window, keeping aspect, letterboxed in black
+    const sc = Math.min(W / this.off.width, H / this.off.height);
+    this.dw = Math.round(this.off.width * sc); this.dh = Math.round(this.off.height * sc);
+    this.dx = Math.floor((W - this.dw) / 2); this.dy = Math.floor((H - this.dh) / 2);
+    this.cells = new Array(this.cols * this.rows);
+    this.clear();
+  }
+  clear() {
+    for (let i = 0; i < this.cells.length; i++) this.cells[i] = null;
+  }
+  // put a single character at (col,row)
+  put(col, row, ch, fg = CFG.colors.fg, bg = null, bold = false) {
+    if (col < 0 || row < 0 || col >= this.cols || row >= this.rows) return;
+    this.cells[row * this.cols + col] = { ch, fg, bg, bold };
+  }
+  text(col, row, str, fg, bg, bold) {
+    for (let i = 0; i < str.length; i++) this.put(col + i, row, str[i], fg, bg, bold);
+  }
+  fill(col, row, w, h, ch, fg, bg) {
+    for (let r = row; r < row + h; r++) for (let c = col; c < col + w; c++) this.put(c, r, ch, fg, bg);
+  }
+  box(col, row, w, h, title, fg = CFG.colors.border) {
+    this.put(col, row, '┌', fg); this.put(col + w - 1, row, '┐', fg);
+    this.put(col, row + h - 1, '└', fg); this.put(col + w - 1, row + h - 1, '┘', fg);
+    for (let c = col + 1; c < col + w - 1; c++) { this.put(c, row, '─', fg); this.put(c, row + h - 1, '─', fg); }
+    for (let r = row + 1; r < row + h - 1; r++) { this.put(col, r, '│', fg); this.put(col + w - 1, r, '│', fg); }
+    if (title) {
+      const t = `┤ ${title} ├`;
+      this.text(col + 2, row, t, fg);
+      this.text(col + 4, row, title, CFG.colors.bright, null, true);
+    }
+  }
+  render() {
+    const o = this.octx, W = this.off.width, H = this.off.height;
+    o.fillStyle = CFG.colors.bg; o.fillRect(0, 0, W, H);
+    o.textBaseline = 'middle';
+    o.textAlign = 'center';
+    // offset so the grid is centred in the internal canvas
+    const ox = Math.floor((W - this.cols * this.cw) / 2);
+    const oy = Math.floor((H - this.rows * this.ch) / 2);
+    for (let r = 0; r < this.rows; r++) {
+      for (let c = 0; c < this.cols; c++) {
+        const cell = this.cells[r * this.cols + c];
+        if (!cell) continue;
+        const x = ox + c * this.cw, y = oy + r * this.ch;
+        if (cell.bg) { o.fillStyle = cell.bg; o.fillRect(x, y, this.cw, this.ch); }
+        if (cell.ch && cell.ch !== ' ') {
+          o.fillStyle = cell.fg;
+          o.font = `${cell.bold ? 'bold ' : ''}${CFG.fontPx}px ${CFG.fontFamily}`;
+          o.fillText(cell.ch, x + this.cw / 2, y + this.ch / 2 + 1);
+        }
+      }
+    }
+    // stretch to the window — this is where the aliasing comes from
+    const v = this.vctx;
+    v.fillStyle = CFG.colors.bg; v.fillRect(0, 0, this.view.width, this.view.height);
+    v.imageSmoothingEnabled = this.smooth;
+    this.view.classList.toggle('smooth', this.smooth);
+    v.drawImage(this.off, 0, 0, W, H, this.dx, this.dy, this.dw, this.dh);
+  }
+}
+
+// ---------- placeholder word generator ----------
+// Stage 1 only: enough phonology to make the interface feel real.
+// We will replace this with the real conlang protocol together.
+const LETTERS = [
+  // heb, final form, hard rom, soft rom (begadkefat), weight, gematria value (standard)
+  { h: 'ב', f: 'ב', hard: 'b',  soft: 'v',  w: 3 , v: 2 },
+  { h: 'ג', f: 'ג', hard: 'g',  soft: 'g',  w: 2 , v: 3 },
+  { h: 'ד', f: 'ד', hard: 'd',  soft: 'd',  w: 3 , v: 4 },
+  { h: 'ה', f: 'ה', hard: 'h',  soft: 'h',  w: 2 , v: 5 },
+  { h: 'ו', f: 'ו', hard: 'v',  soft: 'v',  w: 2 , v: 6 },
+  { h: 'ז', f: 'ז', hard: 'z',  soft: 'z',  w: 2 , v: 7 },
+  { h: 'ח', f: 'ח', hard: 'ch', soft: 'ch', w: 2 , v: 8 },
+  { h: 'ט', f: 'ט', hard: 't',  soft: 't',  w: 2 , v: 9 },
+  { h: 'י', f: 'י', hard: 'y',  soft: 'y',  w: 2 , v: 10 },
+  { h: 'כ', f: 'ך', hard: 'k',  soft: 'kh', w: 3 , v: 20 },
+  { h: 'ל', f: 'ל', hard: 'l',  soft: 'l',  w: 4 , v: 30 },
+  { h: 'מ', f: 'ם', hard: 'm',  soft: 'm',  w: 4 , v: 40 },
+  { h: 'נ', f: 'ן', hard: 'n',  soft: 'n',  w: 4 , v: 50 },
+  { h: 'ס', f: 'ס', hard: 's',  soft: 's',  w: 2 , v: 60 },
+  { h: 'פ', f: 'ף', hard: 'p',  soft: 'f',  w: 2 , v: 80 },
+  { h: 'צ', f: 'ץ', hard: 'ts', soft: 'ts', w: 2 , v: 90 },
+  { h: 'ק', f: 'ק', hard: 'k',  soft: 'k',  w: 2 , v: 100 },
+  { h: 'ר', f: 'ר', hard: 'r',  soft: 'r',  w: 4 , v: 200 },
+  { h: 'ש', f: 'ש', hard: 'sh', soft: 'sh', w: 3 , v: 300 },
+  { h: 'ת', f: 'ת', hard: 't',  soft: 't',  w: 3 , v: 400 },
+];
+const VOWELS = ['a', 'a', 'a', 'e', 'e', 'i', 'o', 'u'];
+const rnd = n => Math.floor(Math.random() * n);
+const pick = arr => arr[rnd(arr.length)];
+function pickLetter() {
+  const total = LETTERS.reduce((s, l) => s + l.w, 0);
+  let r = Math.random() * total;
+  for (const l of LETTERS) { r -= l.w; if (r < 0) return l; }
+  return LETTERS[0];
+}
+
+// A word is a list of segments: {t:'C', heb, rom} or {t:'V', rom}.
+// Syllable boundaries are marked with {t:'-'}.
+function makeWord() {
+  const nSyl = 2 + rnd(3);                 // 2..4 syllables
+  const segs = [];
+  let afterVowel = false;                  // for spirantization
+  for (let s = 0; s < nSyl; s++) {
+    if (s > 0) segs.push({ t: '-' });
+    {
+      const L = pickLetter();
+      segs.push({ t: 'C', heb: L.h, rom: afterVowel ? L.soft : L.hard, L });
+    }
+    segs.push({ t: 'V', rom: pick(VOWELS) });
+    afterVowel = true;
+    if (Math.random() < 0.55) {            // coda
+      const L = pickLetter();
+      segs.push({ t: 'C', heb: L.h, rom: L.soft, L });
+      afterVowel = false;
+    }
+  }
+  // final letter form
+  for (let i = segs.length - 1; i >= 0; i--) {
+    if (segs[i].t === 'C') { if (segs[i].L) segs[i].heb = segs[i].L.f; break; }
+  }
+  return segs;
+}
+
+// ---------- the SPEAK tab ----------
+const state = {
+  tab: 'SPEAK',
+  tabs: ['SPEAK', 'UPGRADE'],
+  cents: 0,
+  intro: [],               // the welcome, pinned at the top
+  log: [],                 // history lines: {text, fg, bold, heb}
+  word: null,
+  cons: [],                // typeable consonants in order: {rom, segIndex}
+  ci: 0,                   // which consonant is next
+  li: 0,                   // which letter within that consonant's cluster
+  err: false,              // a wrong key was typed; the box border is red
+  errTyped: [],            // what was typed since the error, shown in red
+  errTimer: null,
+  holding: false,          // word finished; pausing before it goes into history
+  holdTicks: 0,
+  blinkOn: true,
+};
+
+const INTRO = [
+  '╔════════════════════════════════════════════════╗',
+  '║                                                ║',
+  '║   C O U N T E N A N C E                        ║',
+  '║                                                ║',
+  '║   a speaking machine for an invented tongue    ║',
+  '║                                                ║',
+  '║   words appear.  speak them by typing their    ║',
+  '║   consonants.  each word spoken earns 25¢.     ║',
+  '║   a slip of the tongue and you begin again.    ║',
+  '║                                                ║',
+  '╚════════════════════════════════════════════════╝',
+];
+
+function logLine(text, fg = CFG.colors.fg, bold = false, heb = null, val = null) {
+  state.log.push({ text, fg, bold, heb, val });
+  if (state.log.length > 500) state.log.shift();
+}
+
+function newWord() {
+  state.word = makeWord();
+  state.cons = [];
+  state.word.forEach((s, i) => { if (s.t === 'C' && !s.silent) state.cons.push({ rom: s.rom, segIndex: i }); });
+  state.ci = 0; state.li = 0;
+}
+
+function romanization(word) {
+  return word.map(s => s.t === '-' ? '-' : s.rom).join('').toUpperCase();
+}
+function gematria(word) {
+  return word.filter(s => s.t === 'C').reduce((sum, s) => sum + (s.L ? s.L.v : 0), 0);
+}
+function hebrew(word) {
+  return word.filter(s => s.t === 'C').map(s => s.heb).join('');
+}
+// draw a hebrew string right-aligned so that its right edge sits at column `right`
+function putHebrew(right, row, str, fg, bold) {
+  [...str].forEach((ch, i) => scr.put(right - i, row, ch, fg, null, bold));
+}
+
+function speakSuccess() {
+  state.holding = true; state.holdTicks = 0;
+  setTimeout(() => {
+    state.cents += CFG.cents;
+    logLine(`  ${romanization(state.word)}`, CFG.colors.fg, false, hebrew(state.word), gematria(state.word));
+    state.holding = false;
+    newWord();
+    draw();
+  }, CFG.holdMs);
+}
+
+function clearBox() {
+  clearTimeout(state.errTimer);
+  state.err = false; state.errTyped = [];
+  state.ci = 0; state.li = 0;
+}
+
+function speakFail(k) {
+  // the border goes red and your work stays on screen.  keep typing and it
+  // shows up in red.  stop for a while and the box blanks itself.
+  state.err = true;
+  state.errTyped.push(k);
+  clearTimeout(state.errTimer);
+  state.errTimer = setTimeout(() => { clearBox(); draw(); }, CFG.errBlankMs);
+}
+
+function handleKey(e) {
+  if (e.key === 'F9') { scr.smooth = !scr.smooth; e.preventDefault(); return; }
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    const i = state.tabs.indexOf(state.tab);
+    state.tab = state.tabs[(i + 1) % state.tabs.length];
+    return;
+  }
+  if (state.tab !== 'SPEAK') return;
+  if (['Backspace', 'Delete', 'Escape'].includes(e.key)) {
+    e.preventDefault();
+    if (!state.holding) clearBox();         // any of these wipes the box and you start over
+    return;
+  }
+  if (e.key.length !== 1 || e.ctrlKey || e.metaKey || e.altKey) return;
+  const k = e.key.toLowerCase();
+  if (!/^[a-z]$/.test(k)) return;
+  if (state.holding) return;
+  if ('aeiou'.includes(k)) return;          // vowels are not spoken here; typing them is harmless
+  const cur = state.cons[state.ci];
+  if (!cur) return;
+  if (state.err) { speakFail(k); return; }
+  if (cur.rom[state.li] === k) {
+    state.li++;
+    if (state.li >= cur.rom.length) { state.ci++; state.li = 0; }
+    if (state.ci >= state.cons.length) speakSuccess();
+  } else {
+    speakFail(k);
+  }
+}
+
+// ---------- drawing ----------
+function drawSpeak(x0, y0, w, h) {
+  const C = CFG.colors;
+  // the prompt block takes the bottom 5 rows of the panel interior
+  const promptRows = 5;      // divider, prompt row, input row, blank, status line
+  const logRows = h - promptRows;
+  // not quite a terminal: the welcome stays pinned at the top, the prompt is
+  // pinned at the bottom, and history grows upward from the prompt.  once it
+  // reaches the welcome, the oldest lines fall off the top.
+  // the welcome sits at the top until history climbs up to meet it; from then
+  // on everything scrolls together and the welcome drifts off the top.
+  // history is anchored to the row above the prompt and grows upward; the
+  // welcome is pinned to the top until the history reaches it, after which
+  // the welcome is pushed up (and off) one row per new word.
+  const histTop = y0 + logRows - state.log.length;
+  const introTop = Math.min(y0, histTop - 1 - state.intro.length);
+  state.intro.forEach((t, i) => { const rr = introTop + i; if (rr >= y0) scr.text(x0, rr, t.slice(0, w), CFG.colors.fg); });
+  let r = histTop;
+  for (const ln of state.log) {
+    if (r < y0) { r++; continue; }
+    if (ln.heb) {
+      putHebrew(x0 + CFG.hebCol - 1, r, ln.heb, ln.fg, ln.bold);
+      scr.text(x0 + CFG.hebCol + CFG.gap, r, ln.text.trim(), ln.fg, null, ln.bold);
+      if (ln.val != null) {
+        const v = String(ln.val);
+        scr.text(x0 + CFG.hebCol + CFG.gap + CFG.romCol + CFG.gap + (CFG.valCol - v.length), r, v, ln.fg, null, ln.bold);
+      }
+    } else scr.text(x0, r, ln.text.slice(0, w), ln.fg, null, ln.bold);
+    r++;
+  }
+
+  // a divider across the whole pane, joined to the panel border on both sides
+  const dy = y0 + logRows;
+  scr.put(x0 - 2, dy, '├', C.border);
+  for (let c = x0 - 1; c <= x0 + w; c++) scr.put(c, dy, '─', C.border);
+  scr.put(x0 + w + 1, dy, '┤', C.border);
+
+  if (!state.word) return;
+  const word = state.word;
+  const py = dy + 1;
+
+  // --- hebrew line (right to left) ---
+  const hebSegs = word.filter(s => s.t === 'C');
+  const n = hebSegs.length;
+  const hx = x0 + CFG.hebCol - 1;                     // right edge of the hebrew column
+  hebSegs.forEach((s, i) => {
+    const col = hx - i;                               // reading order runs right→left
+    const k = state.cons.findIndex(c => c.segIndex === word.indexOf(s));
+    let fg = C.vowel, bold = false;
+    if (s.silent) fg = C.vowel;
+    else if (k < state.ci) fg = C.dim;
+    else if (k === state.ci) { fg = C.primary; bold = true; }
+    else fg = C.secondary;
+    scr.put(col, py, s.heb, fg, null, bold);     // same row as the romanization
+  });
+
+  // --- romanization line ---
+  const rom = [];
+  let ck = 0;
+  for (const s of word) {
+    if (s.t === '-') rom.push({ ch: '-', fg: C.vowel });
+    else if (s.t === 'V') for (const ch of s.rom) rom.push({ ch: ch.toUpperCase(), fg: C.vowel });
+    else if (s.silent) { /* alef: nothing in the romanization */ }
+    else {
+      const k = ck++;
+      [...s.rom].forEach((ch, j) => {
+        let fg = C.secondary, bold = false;
+        if (k < state.ci || (k === state.ci && j < state.li)) fg = C.dim;
+        else if (k === state.ci) { fg = C.primary; bold = true; }
+        rom.push({ ch: ch.toUpperCase(), fg, bold });
+      });
+    }
+  }
+  const rx = x0 + CFG.hebCol + CFG.gap;
+  rom.forEach((c, i) => scr.put(rx + i, py, c.ch, c.fg, null, c.bold));
+
+  // --- input box: ghost consonants in grey that you overwrite as you type ---
+  const inp = [];
+  ck = 0;
+  let cursorAt = -1;
+  for (const s of word) {
+    if (s.t !== 'C') continue;                        // consonants only mark the way
+    {
+      const k = ck++;
+      [...s.rom].forEach((ch, j) => {
+        const done = k < state.ci || (k === state.ci && j < state.li);
+        const isCursor = k === state.ci && j === state.li;
+        if (isCursor) cursorAt = inp.length;
+        inp.push({ ch: ch.toUpperCase(), fg: done ? C.bright : C.ghost, bold: done, slot: true });
+      });
+    }
+  }
+  // after a mistake, whatever was typed lands in the slots in red
+  if (state.err) {
+    let at = cursorAt;
+    for (const k of state.errTyped) {
+      while (at < inp.length && !inp[at].slot) at++;
+      if (at >= CFG.inputMax) break;
+      inp[at] = { ch: k.toUpperCase(), fg: C.bad, bold: true, slot: true };   // runs past the end if need be
+      at++;
+    }
+    cursorAt = Math.min(at, inp.length);
+  }
+  const ix = rx, iy = py + 1;                          // first letter lines up with the prompt
+  if (state.err) for (const c of inp) if (c.fg === C.ghost) c.fg = C.bad;   // the way ahead turns red
+  // the hebrew of what you have spoken so far, growing leftward beside the box
+  const spoken = state.cons.slice(0, state.ci).map(c => word[c.segIndex].heb).join('');
+  putHebrew(hx, iy, spoken, C.bright, true);
+  inp.forEach((c, i) => scr.put(ix + i, iy, c.ch, c.fg, null, c.bold));
+  if (cursorAt >= 0 && cursorAt < inp.length && state.blinkOn && !state.holding) {
+    const c = inp[cursorAt];
+    scr.put(ix + cursorAt, iy, c.ch, C.bg, state.err ? C.bad : C.fg, c.bold);
+  }
+  // status bar: a background-coloured line with a red MIC indicator
+  const sy = py + 3;
+  scr.fill(x0, sy, w, 1, ' ', C.fg, C.statusBg);
+  const mic = ' MIC: ON ';
+  scr.text(x0, sy, mic, C.bright, C.bad, true);
+  scr.text(x0 + mic.length + 2, sy, CFG.statusMsg, C.bright, C.statusBg);
+  if (state.holding) {
+    // a thinking pause: dots creep out after the box
+    const dots = '.'.repeat(1 + (state.holdTicks % 3));
+    scr.text(rx + CFG.boxCols, iy, dots, C.bright);
+  }
+}
+
+function drawUpgrade(x0, y0, w, h) {
+  scr.text(x0 + 1, y0 + 1, 'nothing to upgrade yet.', CFG.colors.fg);
+}
+
+function draw() {
+  const C = CFG.colors;
+  scr.clear();
+  const cols = scr.cols, rows = scr.rows;
+
+  // title row
+  scr.text(1, 0, 'countenance', C.fg);
+  const money = `$${(state.cents / 100).toFixed(2)}`;
+  scr.text(1, rows - 2, money, C.money, null, true);
+
+  // main panel
+  const px = 0, py = 1, pw = cols, ph = rows - 3;
+  scr.box(px, py, pw, ph, state.tab);
+  const ix = px + 2, iy = py + 1, iw = pw - 4, ih = ph - 2;
+  if (state.tab === 'SPEAK') drawSpeak(ix, iy, iw, ih);
+  else drawUpgrade(ix, iy, iw, ih);
+
+  // tab bar
+  const ty = rows - 1;
+  scr.fill(0, ty, cols, 1, ' ', C.tabFg, C.tabBg);
+  let tx = 1;
+  for (const t of state.tabs) {
+    const label = ` ${t} `;
+    const active = t === state.tab;
+    scr.text(tx, ty, label, active ? C.tabActFg : C.tabFg, active ? C.tabActBg : C.tabBg, active);
+    tx += label.length + 1;
+  }
+  const hint = 'TAB switches  F9 scaling';
+  scr.text(cols - hint.length - 1, ty, hint, C.tabFg, C.tabBg);
+
+  scr.render();
+}
+
+// ---------- boot ----------
+const scr = new Screen();
+window.addEventListener('resize', () => { scr.resize(); draw(); });
+window.addEventListener('keydown', e => { handleKey(e); draw(); });
+
+state.intro = INTRO.map(l => '  ' + l);
+{ // dev: ?demo=N pre-fills N spoken words so the scrolling can be inspected
+  const n = parseInt(new URLSearchParams(location.search).get('demo') || '0', 10);
+  for (let i = 0; i < n; i++) { const wd = makeWord(); logLine(`  ${romanization(wd)}`, CFG.colors.fg, false, hebrew(wd), gematria(wd)); }
+}
+newWord();
+
+setInterval(() => {
+  state.blinkOn = !state.blinkOn;
+  draw();
+}, 530);
+setInterval(() => {
+  if (state.holding) { state.holdTicks++; draw(); }
+}, 250);
+
+document.fonts.ready.then(() => { scr.resize(); draw(); });
+draw();
+</script>
+</body>
+</html>
