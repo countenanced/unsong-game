@@ -290,7 +290,8 @@ const fmtMoney = c => (c < 0 ? '-' : '') + '$' + (Math.abs(c) / 100).toFixed(2);
 // ---------- upgrades ----------
 const UPGRADES = [
   // id, cost in cents, title, hebrew, romanization.  effects to be decided.
-  { id: 'waking', cost: 500, title: 'Waking Word ©2003', heb: 'נסמיקפין', rom: 'ni-som-ya-ka-fe-yin' },
+  // the waking word: every word matches an amulet, for a while.  it wears off.
+  { id: 'waking', cost: 500, title: 'Waking Word ©2003', heb: 'נסמיקפין', rom: 'ni-som-ya-ka-fe-yin', charges: 20 },
 ];
 
 // ---------- the SPEAK tab ----------
@@ -299,7 +300,8 @@ const state = {
   tabs: ['SPEAK', 'UPGRADE', 'OFFICE'],
   cents: 0,
   amulets: [],             // the five currently on offer
-  owned: [],               // upgrade ids bought
+  owned: [],               // upgrade ids bought (a consumable leaves when it is used up)
+  charges: {},             // id -> words of effect remaining
   sel: 0,                  // highlighted row on the UPGRADE tab
   typed: [],               // every consonant key of the current attempt, right or wrong
   modal: null,             // a notice that seizes the screen until a key is pressed
@@ -346,7 +348,8 @@ function logLine(text, fg = CFG.colors.fg, bold = false, heb = null, val = null,
 
 function newWord() {
   state.word = makeWord();
-  if (Math.random() < CFG.juice) {
+  const waking = (state.charges.waking || 0) > 0;
+  if (waking || Math.random() < CFG.juice) {
     // rigged: keep rolling until a word lands on one of the amulets on offer
     const targets = new Set(state.amulets.map(a => a.val));
     for (let i = 0; i < 5000; i++) {
@@ -394,6 +397,9 @@ function speakSuccess() {
       state.amulets = state.amulets.filter(x => x !== a);
       delete a.won;
       drawAmulets(1);
+    }
+    for (const id of Object.keys(state.charges)) {
+      if (--state.charges[id] <= 0) { delete state.charges[id]; state.owned = state.owned.filter(x => x !== id); }
     }
     state.holding = false; state.matchHold = false;
     newWord();
@@ -479,6 +485,7 @@ function handleKey(e) {
       if (u && !state.owned.includes(u.id) && state.cents >= u.cost) {
         state.cents -= u.cost;
         state.owned.push(u.id);
+        if (u.charges) state.charges[u.id] = u.charges;
         save();
       }
     }
@@ -660,6 +667,10 @@ function drawSpeak(x0, y0, w, h) {
   const mic = ' MIC: ON ';
   scr.text(x0, sy, mic, C.bright, C.bad, true);
   scr.text(x0 + mic.length + 2, sy, CFG.statusMsg, C.bright, C.statusBg);
+  if (state.charges.waking) {
+    const t = `WAKING: ${state.charges.waking} `;
+    scr.text(x0 + w - t.length, sy, t, C.money, C.statusBg, true);
+  }
   if (state.holding) {
     // a thinking pause: dots creep out after the box
     const dots = '.'.repeat(1 + (state.holdTicks % 3));
@@ -699,7 +710,7 @@ function drawUpgrade(x0, y0, w, h) {
     const bg = hi ? (can ? C.fg : C.dim) : null;
     const fg = hi ? C.bg : (can ? C.fg : C.dim);
     if (hi) scr.fill(x0, r, w, 1, ' ', fg, bg);
-    const cost = owned ? 'OWNED' : `$${(u.cost / 100).toFixed(2)}`;
+    const cost = owned ? (state.charges[u.id] ? `${state.charges[u.id]} LEFT` : 'OWNED') : `$${(u.cost / 100).toFixed(2)}`;
     scr.text(x0 + 1, r, u.title, hi ? C.bg : (can ? C.bright : C.dim), bg, can);
     scr.text(x0 + 24 + 8 - cost.length, r, cost, hi ? C.bg : (can ? C.money : C.dim), bg, can);
     putHebrew(x0 + 36 + 8, r, u.heb, fg, bg, can);
@@ -817,7 +828,7 @@ function save() {
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       cents: state.cents, amulets: state.amulets.map(a => a.heb), log: state.log.slice(-200),
-      owned: state.owned, infractions: state.infractions,
+      owned: state.owned, charges: state.charges, infractions: state.infractions,
       modal: state.modal ? { kind: state.modal.kind, id: state.modal.id, showAt: state.modal.showAt, applied: state.modal.applied } : null,
     }));
   } catch (e) { /* private window or storage disabled: play on without memory */ }
@@ -831,6 +842,7 @@ function load() {
     state.amulets = (d.amulets || []).map(h => AMULET_POOL.find(a => a.heb === h)).filter(Boolean);
     state.log = d.log || [];
     state.owned = d.owned || [];
+    state.charges = d.charges || {};
     state.infractions = d.infractions || 0;
     state.modal = d.modal || null;
     return true;
