@@ -302,10 +302,10 @@ const UPGRADES = [
   // id, cost in cents, title, hebrew, romanization.  effects to be decided.
   // id, cost, penalty for unlicensed use, title, hebrew, romanization, words of effect.
   // waking: every word matches an amulet, for a while.
-  { id: 'waking', cost: 500, penalty: 7000, title: 'Waking Word ©2003', heb: 'נסמיקפין', rom: 'ni-som-ya-ka-fe-yin', charges: 20, desc: 'Find amulets faster' },
+  { id: 'waking', cost: 500, penalty: 7000, title: 'Waking Word ©2003', heb: 'נסמיקפין', rom: 'ni-som-ya-ka-fe-yin', charges: 20, desc: 'Find amulets' },
   // honeyed: whatever key you press, the right consonant comes out.
   // (dvash, argent, serpent, nachash, mellifluous; 358, as the serpent and the messiah)
-  { id: 'honeyed', cost: 9000, penalty: 30000, title: 'Honeyed Word ©1997', heb: 'דבגטפנמלמלמל', rom: 'de-va-ge-ta-pe-na-mel-mel-mel', charges: 40, desc: 'Flawless keys' },
+  { id: 'honeyed', cost: 9000, penalty: 30000, title: 'Honeyed Word ©2007', heb: 'דבגטפנמלמלמל', rom: 'de-va-ge-ta-pe-na-mel-mel-mel', charges: 40, desc: 'Flawless keys' },
 ];
 
 // ---------- the SPEAK tab ----------
@@ -772,10 +772,11 @@ function drawUpgrade(x0, y0, w, h) {
     if (hi) scr.fill(x0, r, w, 1, ' ', fg, bg);
     const cost = `$${(u.cost / 100).toFixed(2)}`;
     scr.text(x0 + 1, r, u.title, hi ? C.bg : (can ? C.bright : C.dim), bg, can);
-    scr.text(x0 + 24 + 8 - cost.length, r, cost, hi ? C.bg : (can ? C.money : C.dim), bg, can);
-    putHebrew(x0 + 47, r, u.heb, fg, bg, can);
-    scr.text(x0 + 50, r, u.rom.toUpperCase(), fg, bg);
-    scr.text(x0 + 81, r, u.desc, fg, bg);
+    // title | description | price | hebrew | romanization
+    scr.text(x0 + 24, r, u.desc, fg, bg);
+    scr.text(x0 + 47 - cost.length, r, cost, hi ? C.bg : (can ? C.money : C.dim), bg, can);
+    putHebrew(x0 + 62, r, u.heb, fg, bg, can);
+    scr.text(x0 + 65, r, u.rom.toUpperCase(), fg, bg);
   });
   scr.text(x0 + 1, y0 + h - 1, fmtMoney(state.cents), C.money, null, true);
 }
