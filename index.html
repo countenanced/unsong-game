@@ -55,11 +55,12 @@ const CFG = {
   },
   cents: 25,
   bonusCents: 500,         // for matching an amulet's gematria
+  penaltyCents: 200000,    // for speaking a proprietary word without a licence
   holdMs: 1000,            // how long a finished word lingers before entering history
   errBlankMs: 1000,        // after a mistake, silence this long blanks the box
   hebCol: 10,              // width of the hebrew column on the left (letters hug its right edge)
   gap: 2,                  // whitespace between columns
-  romCol: 17,              // fixed width of the romanization column in the history
+  romCol: 19,              // fixed width of the romanization column in the history (longer is clipped)
   valCol: 4,               // width of the gematria column (right-aligned numbers)
   earnCol: 5,              // "$5.25"
   amuHebCol: 5,            // the matched amulet, hebrew (right-aligned)
@@ -283,12 +284,25 @@ function drawAmulets(n) {
   state.amulets.sort((a, b) => a.val - b.val);
 }
 
+const fmtMoney = c => (c < 0 ? '-' : '') + '$' + (Math.abs(c) / 100).toFixed(2);
+
+// ---------- upgrades ----------
+const UPGRADES = [
+  // id, cost in cents, title, hebrew, romanization.  effects to be decided.
+  { id: 'waking', cost: 200000, title: 'Waking Word ©2003', heb: 'נסמיקפין', rom: 'ni-som-ya-ka-fe-yin' },
+];
+
 // ---------- the SPEAK tab ----------
 const state = {
   tab: 'SPEAK',
   tabs: ['SPEAK', 'UPGRADE', 'OFFICE'],
   cents: 0,
   amulets: [],             // the five currently on offer
+  owned: [],               // upgrade ids bought
+  sel: 0,                  // highlighted row on the UPGRADE tab
+  typed: [],               // every consonant key of the current attempt, right or wrong
+  modal: null,             // a notice that seizes the screen until Enter is pressed
+  infractions: 0,          // the permanent record
   intro: [],               // the welcome, pinned at the top
   log: [],                 // history lines: {text, fg, bold, heb}
   word: null,
@@ -384,6 +398,33 @@ function clearBox() {
   clearTimeout(state.errTimer);
   state.err = false; state.errTyped = [];
   state.ci = 0; state.li = 0;
+  state.typed = [];
+}
+
+// ---------- the law ----------
+function detectViolation() {
+  // speaking a proprietary word you have not paid for, in any context
+  const said = state.typed.join('');
+  for (const u of UPGRADES) {
+    const key = u.rom.replace(/[-aeiou]/g, '');
+    if (said.endsWith(key) && !state.owned.includes(u.id)) { violate(u); return true; }
+  }
+  return false;
+}
+function violate(u) {
+  clearTimeout(state.errTimer);
+  state.cents -= CFG.penaltyCents;
+  state.infractions++;
+  logLine(`  ${u.rom.toUpperCase()}`, CFG.colors.bad, true, u.heb, gval(u.heb), -CFG.penaltyCents);
+  state.modal = { kind: 'violation', id: u.id };
+  save();
+}
+function acceptModal() {
+  state.modal = null;
+  clearBox();
+  newWord();
+  save();
+  draw();
 }
 
 function speakFail(k) {
@@ -396,11 +437,25 @@ function speakFail(k) {
 }
 
 function handleKey(e) {
+  if (state.modal) { e.preventDefault(); if (e.key === 'Enter') acceptModal(); return; }   // only Enter gets through
   if (e.key === 'F9') { scr.smooth = !scr.smooth; e.preventDefault(); return; }
-  if (e.key === 'Tab') {
+  if (e.key === 'Tab' || e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
     e.preventDefault();
-    const i = state.tabs.indexOf(state.tab);
-    state.tab = state.tabs[(i + 1) % state.tabs.length];
+    const i = state.tabs.indexOf(state.tab), n = state.tabs.length;
+    state.tab = state.tabs[(i + (e.key === 'ArrowLeft' ? n - 1 : 1)) % n];
+    return;
+  }
+  if (state.tab === 'UPGRADE') {
+    if (e.key === 'ArrowDown') state.sel = Math.min(state.sel + 1, UPGRADES.length - 1);
+    else if (e.key === 'ArrowUp') state.sel = Math.max(state.sel - 1, 0);
+    else if (e.key === 'Enter') {
+      const u = UPGRADES[state.sel];
+      if (u && !state.owned.includes(u.id) && state.cents >= u.cost) {
+        state.cents -= u.cost;
+        state.owned.push(u.id);
+        save();
+      }
+    }
     return;
   }
   if (state.tab !== 'SPEAK') return;
@@ -414,6 +469,8 @@ function handleKey(e) {
   if (!/^[a-z]$/.test(k)) return;
   if (state.holding) return;
   if ('aeiou'.includes(k)) return;          // vowels are not spoken here; typing them is harmless
+  state.typed.push(k);
+  if (detectViolation()) return;
   const cur = state.cons[state.ci];
   if (!cur) return;
   if (state.err) { speakFail(k); return; }
@@ -454,16 +511,18 @@ function drawSpeak(x0, y0, w, h) {
       if (ln.val != null) { const v = String(ln.val); scr.text(cx + CFG.valCol - v.length, r, v, ln.fg); }
       cx += CFG.valCol + CFG.gap;
       putHebrew(cx + CFG.hebCol - 1, r, ln.heb, ln.fg, ln.bold);            cx += CFG.hebCol + CFG.gap;
-      scr.text(cx, r, ln.text.trim(), ln.fg, null, ln.bold);                cx += CFG.romCol + CFG.gap;
+      scr.text(cx, r, ln.text.trim().slice(0, CFG.romCol), ln.fg, null, ln.bold);   cx += CFG.romCol + CFG.gap;
       if (ln.earned != null) {
         // "$ .25" for small change so that "$5.25" stands out
-        const e = ln.earned < 100 ? `$ ${(ln.earned / 100).toFixed(2).slice(1)}` : `$${(ln.earned / 100).toFixed(2)}`;
-        scr.text(cx + CFG.earnCol - e.length, r, e, ln.amulet ? C.money : ln.fg, null, !!ln.amulet);
+        // "$ .25" for small change; whole dollars without cents so a penalty fits the column
+        const e = ln.earned >= 0 && ln.earned < 100 ? `$ ${(ln.earned / 100).toFixed(2).slice(1)}`
+                : ln.earned % 100 === 0 ? `${ln.earned < 0 ? '-' : ''}$${Math.abs(ln.earned) / 100}` : fmtMoney(ln.earned);
+        scr.text(cx + CFG.earnCol - e.length, r, e, ln.amulet ? C.money : ln.fg, null, !!ln.amulet || ln.earned < 0);
       }
       cx += CFG.earnCol + CFG.gap;
       if (ln.amulet) {
         putHebrew(cx + CFG.amuHebCol - 1, r, ln.amulet.heb || '', C.money, true);  cx += CFG.amuHebCol + CFG.gap;
-        scr.text(cx, r, ln.amulet.gloss || ln.amulet.rom || '', C.money, null, true);
+        scr.text(cx, r, (ln.amulet.gloss || ln.amulet.rom || '').slice(0, x0 + w - cx), C.money, null, true);
       }
     } else scr.text(x0, r, ln.text.slice(0, w), ln.fg, null, ln.bold);
     r++;
@@ -560,12 +619,12 @@ function drawSpeak(x0, y0, w, h) {
   const spoken = state.cons.slice(0, state.ci).map(c => word[c.segIndex].heb).join('');
   putHebrew(hx, iy, spoken, C.bright, true);
   inp.forEach((c, i) => scr.put(ix + i, iy, c.ch, c.fg, null, c.bold));
-  if (cursorAt >= 0 && cursorAt < inp.length && state.blinkOn && !state.holding) {
+  if (cursorAt >= 0 && cursorAt < inp.length && state.blinkOn && !state.holding && !state.modal) {
     const c = inp[cursorAt];
     scr.put(ix + cursorAt, iy, c.ch, C.bg, state.err ? C.bad : C.fg, c.bold);
   }
   // running total, in the money column, on the row above the status bar
-  const money = `$${(state.cents / 100).toFixed(2)}`;
+  const money = fmtMoney(state.cents);
   const earnRight = x0 + CFG.valCol + CFG.gap + CFG.hebCol + CFG.gap + CFG.romCol + CFG.gap + CFG.earnCol;
   scr.text(earnRight - money.length, py + 2, money, C.money, null, true);
 
@@ -599,7 +658,68 @@ function drawSide(x0, y0, w, h) {
 }
 
 function drawUpgrade(x0, y0, w, h) {
-  scr.text(x0 + 1, y0 + 1, 'nothing to upgrade yet.', CFG.colors.fg);
+  const C = CFG.colors;
+  UPGRADES.forEach((u, i) => {
+    const r = y0 + 1 + i;
+    const owned = state.owned.includes(u.id);
+    const can = !owned && state.cents >= u.cost;
+    const hi = i === state.sel;
+    // too expensive: greyed out.  affordable: price in gold.  highlighted: reverse video.
+    const bg = hi ? (can ? C.fg : C.dim) : null;
+    const fg = hi ? C.bg : (can ? C.fg : C.dim);
+    if (hi) scr.fill(x0, r, w, 1, ' ', fg, bg);
+    const cost = owned ? 'OWNED' : `$${(u.cost / 100).toFixed(2)}`;
+    scr.text(x0 + 1, r, u.title, hi ? C.bg : (can ? C.bright : C.dim), bg, can);
+    scr.text(x0 + 24 + 8 - cost.length, r, cost, hi ? C.bg : (can ? C.money : C.dim), bg, can);
+    putHebrew(x0 + 36 + 8, r, u.heb, fg, bg, can);
+    scr.text(x0 + 47, r, u.rom.toUpperCase(), fg, bg);
+  });
+  scr.text(x0 + 1, y0 + h - 1, fmtMoney(state.cents), C.money, null, true);
+}
+
+function drawModal() {
+  const C = CFG.colors, m = state.modal;
+  const u = UPGRADES.find(x => x.id === m.id);
+  const W = 62, inner = W - 4;
+  const paras = [
+    'You have been found in violation of federal intellectual property law (17 U.S.C. § 501).',
+    null,                                                            // the citation line
+    `A disciplinary penalty has been assessed in the amount of ${fmtMoney(CFG.penaltyCents)}. ` +
+    'Nothing herein shall be construed as a waiver of any rights or remedies, all of which are expressly reserved.',
+    'A record of this infraction has been added to your permanent record.',
+  ];
+  // word-wrap each paragraph to the inner width, blank line between
+  const lines = [];
+  for (const p of paras) {
+    if (p === null) { lines.push({ cite: true }); lines.push(''); continue; }
+    let line = '';
+    for (const word of p.split(' ')) {
+      if ((line + ' ' + word).trim().length > inner) { lines.push(line); line = word; }
+      else line = (line + ' ' + word).trim();
+    }
+    lines.push(line); lines.push('');
+  }
+  const H = lines.length + 6;
+  const x = Math.floor((scr.cols - W) / 2), y = Math.floor((scr.rows - H) / 2);
+  const title = ' UNLICENSED UTTERANCE DETECTED ';
+  const on = state.blinkOn;                                  // in step with the cursor's blink
+  if (on) scr.clear();                                       // the world blanks while the title is lit
+  scr.fill(x, y, W, H, ' ', C.fg, C.bg);
+  scr.box(x, y, W, H, null, C.bad);
+  scr.text(x + Math.floor((W - title.length) / 2), y, title, on ? C.bright : C.bad, on ? C.bad : C.bg, true);
+  let r = y + 2;
+  for (const ln of lines) {
+    if (ln && ln.cite) {
+      const a = 'Citation: ', b = ` (${u.title})`;
+      scr.text(x + 2, r, a, C.fg);
+      putHebrew(x + 2 + a.length + u.heb.length - 1, r, u.heb, C.bright, true);
+      scr.text(x + 2 + a.length + u.heb.length, r, b, C.fg);
+    } else scr.text(x + 2, r, ln, C.fg);
+    r++;
+  }
+  const btn = '[ I ACCEPT ]';
+  const bc = x + Math.floor((W - btn.length) / 2), br = y + H - 2;
+  scr.text(bc, br, btn, C.bg, C.fg, true);
 }
 
 function drawOffice(x0, y0, w, h) {
@@ -645,9 +765,10 @@ function drawNow() {
     scr.text(tx, ty, label, active ? C.tabActFg : C.tabFg, active ? C.tabActBg : C.tabBg, active);
     tx += label.length + 1;
   }
-  const hint = 'TAB switches  F9 scaling';
+  const hint = state.tab === 'UPGRADE' ? '←→ tabs  ↑↓ select' : '←→ tabs';
   scr.text(cols - hint.length - 1, ty, hint, C.tabFg, C.tabBg);
 
+  if (state.modal) drawModal();
   scr.render();
 }
 
@@ -657,6 +778,8 @@ function save() {
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       cents: state.cents, amulets: state.amulets.map(a => a.heb), log: state.log.slice(-200),
+      owned: state.owned, infractions: state.infractions,
+      modal: state.modal ? { kind: state.modal.kind, id: state.modal.id } : null,
     }));
   } catch (e) { /* private window or storage disabled: play on without memory */ }
 }
@@ -668,6 +791,9 @@ function load() {
     state.cents = d.cents || 0;
     state.amulets = (d.amulets || []).map(h => AMULET_POOL.find(a => a.heb === h)).filter(Boolean);
     state.log = d.log || [];
+    state.owned = d.owned || [];
+    state.infractions = d.infractions || 0;
+    state.modal = d.modal || null;
     return true;
   } catch (e) { return false; }
 }
@@ -676,6 +802,7 @@ function load() {
 const scr = new Screen();
 window.addEventListener('resize', () => { scr.resize(); draw(); });
 window.addEventListener('keydown', e => { handleKey(e); draw(); });
+
 window.addEventListener('error', e => {
   // last resort: show the fault on screen rather than a black page
   scr.clear();
@@ -698,12 +825,13 @@ drawAmulets(CFG.amuletsShown - state.amulets.length);
 newWord();
 
 setInterval(() => {
-  state.blinkOn = !state.blinkOn;
+  state.blinkOn = !state.blinkOn;      // 1 Hz: the cursor, and the notice's flash
   draw();
-}, 530);
+}, 500);
 setInterval(() => {
   if (state.holding) { state.holdTicks++; draw(); }
 }, 250);
+
 
 document.fonts.ready.then(() => { scr.resize(); draw(); });
 draw();
