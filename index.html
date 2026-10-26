@@ -309,7 +309,7 @@ const state = {
   tabs: ['SPEAK', 'UPGRADE', 'OFFICE'],
   cents: 0,
   amulets: [],             // the five currently on offer
-  owned: [],               // upgrade ids bought (a consumable leaves when it is used up)
+  owned: [],               // licences bought and not yet spoken: single-use contracts
   charges: {},             // id -> words of effect remaining
   sel: 0,                  // highlighted row on the UPGRADE tab
   typed: [],               // every consonant key of the current attempt, right or wrong
@@ -432,10 +432,11 @@ function speakSuccess() {
     if (state.word.grants) {                      // the bought word, now spoken: its power arrives
       const u = UPGRADES.find(x => x.id === state.word.grants);
       if (u && u.charges) state.charges[u.id] = u.charges;
+      state.owned = state.owned.filter(x => x !== u.id);   // the licence was for one utterance
       replenishAmulets();
     }
     if (!state.word.free) for (const id of Object.keys(state.charges)) {
-      if (--state.charges[id] <= 0) { delete state.charges[id]; state.owned = state.owned.filter(x => x !== id); }
+      if (--state.charges[id] <= 0) delete state.charges[id];
     }
     state.holding = false; state.matchHold = false;
     newWord();
@@ -751,7 +752,7 @@ function drawUpgrade(x0, y0, w, h) {
     const bg = hi ? (can ? C.fg : C.dim) : null;
     const fg = hi ? C.bg : (can ? C.fg : C.dim);
     if (hi) scr.fill(x0, r, w, 1, ' ', fg, bg);
-    const cost = owned ? (state.charges[u.id] ? `${state.charges[u.id]} LEFT` : 'OWNED') : `$${(u.cost / 100).toFixed(2)}`;
+    const cost = owned ? 'PENDING' : `$${(u.cost / 100).toFixed(2)}`;
     scr.text(x0 + 1, r, u.title, hi ? C.bg : (can ? C.bright : C.dim), bg, can);
     scr.text(x0 + 24 + 8 - cost.length, r, cost, hi ? C.bg : (can ? C.money : C.dim), bg, can);
     putHebrew(x0 + 36 + 8, r, u.heb, fg, bg, can);
