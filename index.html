@@ -673,6 +673,11 @@ function drawSide(x0, y0, w, h) {
 
 function drawUpgrade(x0, y0, w, h) {
   const C = CFG.colors;
+  const anyAffordable = UPGRADES.some(u => !state.owned.includes(u.id) && state.cents >= u.cost);
+  if (!anyAffordable) {
+    const msg = 'Insufficient funds.';
+    scr.text(x0 + Math.floor((w - msg.length) / 2), y0, msg, C.bright);
+  }
   UPGRADES.forEach((u, i) => {
     const r = y0 + 1 + i;
     const owned = state.owned.includes(u.id);
