@@ -429,6 +429,11 @@ function speakSuccess() {
       delete a.won;
       replenishAmulets();
     }
+    if (state.word.grants) {                      // the bought word, now spoken: its power arrives
+      const u = UPGRADES.find(x => x.id === state.word.grants);
+      if (u && u.charges) state.charges[u.id] = u.charges;
+      replenishAmulets();
+    }
     if (!state.word.free) for (const id of Object.keys(state.charges)) {
       if (--state.charges[id] <= 0) { delete state.charges[id]; state.owned = state.owned.filter(x => x !== id); }
     }
@@ -516,11 +521,10 @@ function handleKey(e) {
       if (u && !state.owned.includes(u.id) && state.cents >= u.cost) {
         state.cents -= u.cost;
         state.owned.push(u.id);
-        if (u.charges) state.charges[u.id] = u.charges;
-        replenishAmulets();
-        // you are sent back to speak the word you just bought; it costs no charge
+        // you are sent back to speak the word you just bought.  nothing is
+        // granted until you have said it, and saying it costs no charge.
         clearBox();
-        const w = wordFrom(u.rom, u.heb); w.free = true;
+        const w = wordFrom(u.rom, u.heb); w.free = true; w.grants = u.id;
         setWord(w);
         state.tab = 'SPEAK';
         save();
