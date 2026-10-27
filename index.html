@@ -831,7 +831,7 @@ const state = {
   tabs: ['SPEAK', 'BUY NAMES', 'OFFICE'],
   cents: 0,
   amulets: [],             // the five currently on offer
-  queue: [],               // licences bought and not yet spoken, in purchase order: one utterance each
+  stack: [],               // licences bought and not yet spoken, newest last: one utterance each, last in first out
   charges: {},             // id -> words of effect remaining
   sel: 0,                  // highlighted row on the BUY NAMES tab
   typed: [],               // every consonant key of the current attempt, right or wrong
@@ -911,7 +911,7 @@ function contractWord(id) {
 }
 function newWord() {
   // a bought word waits at the microphone until it has been said
-  if (state.queue.length) { setWord(contractWord(state.queue[0])); return; }
+  if (state.stack.length) { setWord(contractWord(state.stack.at(-1))); return; }   // the newest first
   state.word = makeWord();
   if (wakingActive() || Math.random() < CFG.juice) {
     // rigged: keep rolling until a word lands on one of the amulets on offer,
@@ -985,12 +985,12 @@ function clearBox() {
   state.typed = [];
 }
 
-// a licence is spent: its power arrives and the first copy of it leaves the queue
+// a licence is spent: its power arrives and its newest copy leaves the stack
 function redeem(id) {
   const u = UPGRADES.find(x => x.id === id);
   state.charges[id] = (state.charges[id] || 0) + (u.charges || 0);   // one purchase's worth
-  const i = state.queue.indexOf(id);
-  if (i >= 0) state.queue.splice(i, 1);           // the licence was for one utterance
+  const i = state.stack.lastIndexOf(id);
+  if (i >= 0) state.stack.splice(i, 1);           // the licence was for one utterance
   replenishAmulets();
 }
 
@@ -1010,7 +1010,7 @@ function detectViolation() {
   for (const u of UPGRADES) {
     const key = u.rom.replace(/[-aeiou]/g, '');
     if (!said.endsWith(key)) continue;
-    if (!state.queue.includes(u.id)) { violate(u); return true; }
+    if (!state.stack.includes(u.id)) { violate(u); return true; }
     if (state.holding && state.word.grants === u.id) return false;   // said at the microphone, in order: speakSuccess has it
     const label = u.title.replace(/\s*©.*$/, '').toUpperCase();
     logLine(`  ${u.rom.toUpperCase()}`, CFG.colors.contract, false, u.heb, gval(u.heb), null, null, label);
@@ -1018,7 +1018,7 @@ function detectViolation() {
     // the attempt is over.  if the contract at the microphone was the one just
     // spent, the next licence (or an ordinary word) takes its place.
     clearBox();
-    if (state.word.free && state.word.grants !== state.queue[0]) newWord();
+    if (state.word.free && state.word.grants !== state.stack.at(-1)) newWord();
     save();
     return true;
   }
@@ -1087,11 +1087,11 @@ function handleKey(e) {
       const u = UPGRADES[selected()];
       if (u && state.cents >= u.cost) {
         earn(-u.cost);
-        state.queue.push(u.id);
-        // you are sent back to speak the words you have bought, in the order
-        // bought.  nothing is granted until a word is said, and saying it costs
-        // no charge.  a contract already at the microphone keeps its place.
-        if (!state.word || !state.word.free) { clearBox(); newWord(); }
+        state.stack.push(u.id);
+        // you are sent back to speak the word you just bought: the newest
+        // purchase is said first.  nothing is granted until a word is said,
+        // and saying it costs no charge.
+        clearBox(); newWord();
         state.tab = 'SPEAK';
         save();
       }
@@ -1515,7 +1515,7 @@ function save() {
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       cents: state.cents, amulets: state.amulets.map(a => a.heb), log: state.log.slice(-200),
-      queue: state.queue, charges: state.charges, infractions: state.infractions,
+      stack: state.stack, charges: state.charges, infractions: state.infractions,
       modal: state.modal ? { kind: state.modal.kind, id: state.modal.id, showAt: state.modal.showAt, applied: state.modal.applied } : null,
     }));
   } catch (e) { /* private window or storage disabled: play on without memory */ }
@@ -1533,11 +1533,12 @@ function load() {
     state.amulets = (d.amulets || []).map(h => AMULET_POOL.find(a => a.heb === h)).filter(Boolean);
     state.log = d.log || [];
     state.charges = d.charges || {};
-    if (Array.isArray(d.queue)) state.queue = d.queue.filter(id => UPGRADES.some(u => u.id === id));
+    const kept = d.stack || d.queue;           // (saves from before the stack kept a queue, newest last as well)
+    if (Array.isArray(kept)) state.stack = kept.filter(id => UPGRADES.some(u => u.id === id));
     else for (const id of d.owned || []) {     // an older save: one licence per purchase still owed
       const u = UPGRADES.find(x => x.id === id);
       const n = u && u.charges ? Math.max(1, Math.round(((d.pending || {})[id] || 0) / u.charges)) : u ? 1 : 0;
-      for (let k = 0; k < n; k++) state.queue.push(id);
+      for (let k = 0; k < n; k++) state.stack.push(id);
     }
     state.infractions = d.infractions || 0;
     state.modal = d.modal || null;
