@@ -90,6 +90,8 @@ const CFG = {
   inputMax: 40,            // how far a stray typist can run past the end of the word
   sideCols: 38,            // width of the AMULETS side panel
   activeRows: 6,           // height of the ACTIVE NAMES frame beneath it, borders included
+  lowCharges: 5,           // at or below this many charges a name's row turns red
+  expiredMs: 1000,         // a spent name lingers this long, white on red, before it is struck off
   amuletsShown: 5,
   juice: 0.08,             // chance that a word is rigged to match an amulet (?juice=0 to disable)
   boxCols: 20,
@@ -834,6 +836,7 @@ const state = {
   amulets: [],             // the five currently on offer
   stack: [],               // licences bought and not yet spoken, newest last: one utterance each, last in first out
   charges: {},             // id -> words of effect remaining
+  expired: {},             // id -> when its just-spent row leaves ACTIVE NAMES (not saved)
   sel: 0,                  // highlighted row on the BUY NAMES tab
   typed: [],               // every consonant key of the current attempt, right or wrong
   modal: null,             // a notice that seizes the screen until a key is pressed
@@ -970,7 +973,11 @@ function speakSuccess() {
     }
     if (state.word.grants) redeem(state.word.grants);   // the bought word, now spoken
     if (!state.word.free) for (const id of Object.keys(state.charges)) {
-      if (--state.charges[id] <= 0) delete state.charges[id];
+      if (--state.charges[id] <= 0) {
+        delete state.charges[id];
+        state.expired[id] = Date.now() + CFG.expiredMs;     // shown spent for a moment, so you notice
+        setTimeout(draw, CFG.expiredMs + 20);
+      }
     }
     state.holding = false; state.matchHold = false;
     newWord();
@@ -1348,7 +1355,10 @@ function drawSpeak(x0, y0, w, h) {
 // the bought names now in force, with the words of effect each has left
 function drawActive(x0, y0, w, h) {
   const C = CFG.colors, head = 'CHARGES REMAINING';
-  const live = UPGRADES.filter(u => (state.charges[u.id] || 0) > 0);   // only names in force: spent ones drop off
+  const now = Date.now();
+  for (const id in state.expired) if (state.expired[id] <= now || state.charges[id] > 0) delete state.expired[id];
+  // only names in force, and for a moment the one just spent
+  const live = UPGRADES.filter(u => (state.charges[u.id] || 0) > 0 || state.expired[u.id]);
   if (!live.length) {                                // no table, just the word from the company
     const lines = [''];
     for (const wd of 'No active names. You can buy names from the company store.'.split(' '))
@@ -1359,9 +1369,12 @@ function drawActive(x0, y0, w, h) {
   scr.text(x0, y0, 'NAME', C.fg, null, true);
   scr.text(x0 + w - head.length, y0, head, C.fg, null, true);
   live.slice(0, h - 1).forEach((u, i) => {
-    const n = String(state.charges[u.id]);
-    scr.text(x0, y0 + 1 + i, u.title.replace(/\s*©.*$/, '').toUpperCase(), C.contract, null, true);
-    scr.text(x0 + w - n.length, y0 + 1 + i, n, C.contract, null, true);
+    const left = state.charges[u.id] || 0, n = String(left), r = y0 + 1 + i;
+    // blue while in force, red when running low, white on red the moment it is spent
+    const fg = !left ? C.bright : left <= CFG.lowCharges ? C.bad : C.contract, bg = !left ? C.bad : null;
+    if (bg) scr.fill(x0, r, w, 1, ' ', fg, bg);
+    scr.text(x0, r, u.title.replace(/\s*©.*$/, '').toUpperCase(), fg, bg, true);
+    scr.text(x0 + w - n.length, r, n, fg, bg, true);
   });
 }
 function drawSide(x0, y0, w, h) {
