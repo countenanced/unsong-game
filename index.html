@@ -837,7 +837,7 @@ const SECRET_NAMES = [
   { rom: 'ma-mon-kol-tsom-su-lam', heb: 'ממון קול צום סולם', holy: true,
     effect() { if (state.cents < 13600000000) earn(13600000000 - state.cents); } },   // raises you to it, never lowers
   // nothingness: whatever you owe comes to nothing
-  { rom: 'to-hu-va-vo-hu', heb: 'תהו ובהו',
+  { title: 'Formless Word', rom: 'to-hu-va-vo-hu', heb: 'תהו ובהו',
     effect() { if (state.cents < 0) earn(-state.cents); } },
 ];
 
@@ -1035,7 +1035,8 @@ function detectViolation() {
   for (const sn of SECRET_NAMES) {
     if (!said.endsWith(consonantKey(sn.rom))) continue;
     const ln = sn.holy ? logLine(`  ${sn.rom.toUpperCase()}`, CFG.colors.bright, true, sn.heb, gval(sn.heb))
-                       : logLine(`  ${sn.rom.toUpperCase()}`, CFG.colors.contract, false, sn.heb, gval(sn.heb));
+                       : logLine(`  ${sn.rom.toUpperCase()}`, CFG.colors.contract, false, sn.heb, gval(sn.heb), null, null,
+                                 sn.title ? sn.title.toUpperCase() : false);      // named like a bought word, if it has a name
     if (sn.holy) ln.holy = true; else ln.unlisted = true;   // light, or just the blue and a dash
     sn.effect();
     clearBox();
