@@ -86,6 +86,8 @@
    or somewhere. We're short on space, but maybe in the money column?
    
 
+MAMON-KOL-TSOM-SULAM
+
 * Inchohate ideas for later
 1. Hire someone to chant the waking word over you, so you always have
    at least 10 waking words whenever you can afford it.
@@ -135,4 +137,8 @@
     payouts are still fixed per word, but good to think
     about. Thinking about this as part of thinking about the
     non-placeholder-word-generator.
+13. Ciagrette breaks may show an ascii art cigarette (with the tan and
+    white and maybe ash and ember) burning slowly down as a progress
+    bar.
+    
    
