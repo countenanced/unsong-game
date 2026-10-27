@@ -14,10 +14,28 @@
     cursor: none;
   }
   canvas#screen.smooth { image-rendering: auto; }
+  /* the terminal redrawn through a warp, laid exactly over it while a holy word is on screen */
+  canvas#gravity {
+    position: absolute; display: none; pointer-events: none;
+    image-rendering: pixelated; image-rendering: crisp-edges;
+  }
+  canvas#gravity.smooth { image-rendering: auto; }
+  /* the holy word itself, floating out of the glass: crisp, full resolution */
+  canvas#levitate {
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none;
+  }
+  /* light that is not part of the terminal: smooth, unbounded, over everything */
+  canvas#radiance {
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+    pointer-events: none; mix-blend-mode: screen;
+  }
 </style>
 </head>
 <body>
 <canvas id="screen"></canvas>
+<canvas id="gravity"></canvas>
+<canvas id="radiance"></canvas>
+<canvas id="levitate"></canvas>
 <script>
 'use strict';
 
@@ -167,8 +185,497 @@ class Screen {
       this.shown[i] = cell;
     }
     this.view.classList.toggle('smooth', this.smooth);
+    this.version = (this.version || 0) + 1;      // for anything that copies the screen (the gravity)
   }
 }
+
+// ---------- the holy word: shared ----------
+// Three layers dress a holy word, each its own module: GRAVITY creases the
+// screen around it (WebGL, under everything), RADIANCE glows about it, and
+// LEVITATE draws the word itself floating out of the glass.  The terminal's own
+// copy stays exactly where an ordinary word would be.  They share one clock and
+// one hover, so the light and the creases rise and fall with the floating word.
+// After each paint the ledger hands every layer the holy rows, in cells:
+//   { col, row, w, h, seed, glyphs: [{col, row, ch}] }
+CFG.levitate = {
+  scale: 1.08,               // the floating word is this much larger than the text
+  amp: 0.088,                // how far it bobs, in line heights
+  period: 11,                // seconds for one slow rise and fall
+  wavelength: 10,            // the rise and fall travels along the word like a flag; crest to crest, in line heights
+  slice: 2,                  // width of the strips the word is cut into to ripple, in screen pixels
+  glow: 0.55,                // blur of its glow, in line heights
+  glowColor: 'rgba(255, 246, 226, 0.95)',
+  color: '#ffffff',
+  restColor: null,           // the terminal's own copy while the word floats: a colour, or null to hide it
+};
+const Holy = {
+  t0: performance.now(),
+  time: now => (now - Holy.t0) / 1000,
+  // how far above its resting place the word floats now, in line heights (up is negative),
+  // at u line heights from the left of the window: a wave travelling rightward along the word
+  lift: (t, u = 0) => -CFG.levitate.amp * (0.5 - 0.5 * Math.cos(2 * Math.PI * (t / CFG.levitate.period - u / CFG.levitate.wavelength))),
+  rng(seed) {
+    return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+      let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  },
+  // cells to the pixels of a canvas laid over the whole window at k canvas px per window px
+  toWindow(cellRects, screen, k) {
+    const b = screen.view.getBoundingClientRect();
+    const sx = b.width / screen.view.width * k, sy = b.height / screen.view.height * k;
+    const px = col => b.left * k + col * screen.cw * sx, py = row => b.top * k + row * screen.ch * sy;
+    return cellRects.map(c => ({
+      x: px(c.col), y: py(c.row), w: c.w * screen.cw * sx, h: c.h * screen.ch * sy, cell: screen.ch * sy,
+      font: CFG.fontPx * sy, seed: c.seed || 1,
+      glyphs: (c.glyphs || []).map(g => ({ x: px(g.col + 0.5), y: py(g.row + 0.5), ch: g.ch })),
+    }));
+  },
+  // a source moved by the current hover, each letter by the wave where it stands
+  lifted(src, t) {
+    const dy = Holy.lift(t, (src.x + src.w / 2) / src.cell) * src.cell;
+    return { ...src, y: src.y + dy, glyphs: src.glyphs.map(g => ({ ...g, y: g.y + Holy.lift(t, g.x / src.cell) * src.cell })) };
+  },
+};
+
+// ---------- radiance ----------
+// Light that does not belong to the terminal, on its own full-window canvas
+// and its own clock, so it flows between paints and spills past the row and
+// the screen.  It sleeps when nothing holy is visible.
+//
+// An effect is a function (ctx, src, t, P, rng) that draws one source:
+//   src: { x, y, w, h, cell, glyphs }   the row's text, in canvas pixels, already
+//        lifted by the hover; cell = one line's height; glyphs = [{x, y}] letter centres
+//   t:   seconds on the shared clock
+//   P:   CFG.radiance.<effect name>, for tuning
+//   rng: a seeded random generator, the same every frame for the same source
+// Choose with ?rays=<name> (or ?rays=off); tune in CFG.radiance.
+CFG.radiance = {
+  effect: 'aura',
+  resolution: 0.5,           // canvas pixels per window pixel; light is soft, so half is plenty
+  burst:  { rays: 44, reach: 12, width: 0.05, sway: 0.12, speed: 0.25, flicker: 1.3,
+            alpha: 0.45, bloom: 0.55, color: [255, 244, 214] },
+  shafts: { beams: 9, slant: 0.35, width: 2.4, drift: 0.08, alpha: 0.22, bloom: 0.45, color: [255, 246, 220] },
+  // aura: every letter breathes a soft blob; larger wisps wander off the letters,
+  // rise, and fade.  overlapping light adds up, so the blobs merge and part.
+  aura:   { core: 1.4, coreAlpha: 0.18, wisps: 22, wispSize: [0.9, 2.6], wander: 0.9, rise: 1.0,
+            life: [4, 9], wispAlpha: 0.09, color: [255, 246, 226], tint: [200, 215, 255], tintMix: 0.35 },
+  halo:   { size: 3, breathe: 0.6, alpha: 0.6, color: [255, 248, 230] },
+};
+const Radiance = (() => {
+  const cv = document.getElementById('radiance'), ctx = cv.getContext('2d');
+  const q = new URLSearchParams(location.search).get('rays');
+  let sources = [], raf = 0, painted = false;
+  const effects = {};
+  const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${Math.max(0, Math.min(1, a))})`;
+
+  function resize() {
+    const k = CFG.radiance.resolution;
+    cv.width = Math.ceil(window.innerWidth * k); cv.height = Math.ceil(window.innerHeight * k);
+    painted = true;                                       // resizing clears it; make sure we repaint
+    wake();
+  }
+  function set(cellRects, screen) {
+    sources = q === 'off' ? [] : Holy.toWindow(cellRects, screen, CFG.radiance.resolution);
+    wake();
+  }
+  function wake() { if (!raf && (sources.length || painted)) raf = requestAnimationFrame(frame); }
+  function frame(now) {
+    raf = 0;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    painted = false;
+    if (!sources.length) return;                          // nothing holy on screen: sleep
+    const name = q && effects[q] ? q : CFG.radiance.effect;
+    const fx = effects[name], P = CFG.radiance[name] || {};
+    const t = Holy.time(now);
+    ctx.globalCompositeOperation = 'lighter';
+    for (const src of sources) { ctx.save(); fx(ctx, Holy.lifted(src, t), t, P, Holy.rng(src.seed)); ctx.restore(); }
+    painted = true;
+    raf = requestAnimationFrame(frame);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+  return { effects, set, resize, rgba };
+})();
+
+// ---------- levitate ----------
+// The holy word itself, a little larger than the text and glowing, floating
+// above its resting place and bobbing slowly.  ?hover=off hides it.
+const Levitate = (() => {
+  // the word is painted once, at rest, into a sprite; each frame the sprite is
+  // resampled at a fractional offset, so the bob glides between pixels
+  // instead of snapping to them (text and layer transforms both snap)
+  const cv = document.getElementById('levitate'), ctx = cv.getContext('2d');
+  const off = new URLSearchParams(location.search).get('hover') === 'off';
+  let sources = [], raf = 0, k = 1, key = '', sprites = [], dirty = [];
+  function resize() {
+    k = window.devicePixelRatio || 1;
+    cv.width = Math.ceil(window.innerWidth * k); cv.height = Math.ceil(window.innerHeight * k);
+    key = ''; dirty = []; build(); wake();
+  }
+  function set(cellRects, screen) {
+    sources = off ? [] : Holy.toWindow(cellRects, screen, k).filter(s => s.glyphs.length);
+    build(); wake();
+  }
+  function build() {
+    const nk = JSON.stringify([cv.width, sources.map(s => [s.font, s.glyphs])]);
+    if (nk === key) return;
+    key = nk;
+    const L = CFG.levitate;
+    sprites = sources.map(src => {
+      // grow about the word's own centre
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const g of src.glyphs) { x0 = Math.min(x0, g.x); x1 = Math.max(x1, g.x); y0 = Math.min(y0, g.y); y1 = Math.max(y1, g.y); }
+      const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+      const pad = Math.ceil(src.cell * (1 + L.glow * 2));
+      const ox = Math.floor(cx - (cx - x0) * L.scale - pad), oy = Math.floor(cy - (cy - y0) * L.scale - pad);
+      const sp = document.createElement('canvas');
+      sp.width = Math.ceil((x1 - x0) * L.scale + pad * 2 + 2); sp.height = Math.ceil((y1 - y0) * L.scale + pad * 2 + 2);
+      const c = sp.getContext('2d');
+      c.font = `bold ${src.font * L.scale}px ${CFG.fontFamily}`;
+      c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillStyle = L.color;
+      for (const pass of [L.glow * src.cell, 0]) {        // the glow, then the letters crisp on top
+        c.shadowBlur = pass; c.shadowColor = pass ? L.glowColor : 'transparent';
+        for (const g of src.glyphs)
+          c.fillText(g.ch, cx + (g.x - cx) * L.scale - ox, cy + (g.y - cy) * L.scale + src.cell * 0.04 - oy);
+      }
+      return { sp, ox, oy, cell: src.cell };
+    });
+  }
+  function wake() { if (!raf && (sprites.length || dirty.length)) raf = requestAnimationFrame(frame); }
+  function frame(now) {
+    raf = 0;
+    for (const d of dirty) ctx.clearRect(d[0], d[1], d[2], d[3]);
+    dirty = [];
+    if (!sprites.length) return;
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    const t = Holy.time(now), amp = Math.ceil(CFG.levitate.amp * 1.01 * (sprites[0] ? sprites[0].cell : 0)) + 2;
+    const sw = Math.max(1, Math.round(CFG.levitate.slice * k));
+    for (const s of sprites) {
+      // cut into thin strips, each lifted by the wave at its own place: fractional,
+      // so resampled rather than snapped
+      for (let x = 0; x < s.sp.width; x += sw) {
+        const w = Math.min(sw, s.sp.width - x);
+        const y = s.oy + Holy.lift(t, (s.ox + x + w / 2) / s.cell) * s.cell;
+        ctx.drawImage(s.sp, x, 0, w, s.sp.height, s.ox + x, y, w, s.sp.height);
+      }
+      dirty.push([s.ox - 2, s.oy - amp, s.sp.width + 4, s.sp.height + amp + 2]);
+    }
+    raf = requestAnimationFrame(frame);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+  return { set, floating: !off };
+})();
+
+// a soft glow hugging the text; shared by the effects below
+function radianceBloom(ctx, src, t, size, alpha, color) {
+  const cx = src.x + src.w / 2, cy = src.y + src.h / 2;
+  const rx = src.w / 2 + src.cell * size, ry = src.h / 2 + src.cell * size;
+  ctx.save();
+  ctx.translate(cx, cy); ctx.scale(1, ry / rx);
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+  g.addColorStop(0, Radiance.rgba(color, alpha));
+  g.addColorStop(0.45, Radiance.rgba(color, alpha * 0.35));
+  g.addColorStop(1, Radiance.rgba(color, 0));
+  ctx.fillStyle = g;
+  ctx.fillRect(-rx, -rx, rx * 2, rx * 2);
+  ctx.restore();
+}
+
+// burst: thin rays streaming out from all along the word, swaying and flickering
+Radiance.effects.burst = (ctx, src, t, P, rng) => {
+  const cy = src.y + src.h / 2;
+  for (let i = 0; i < P.rays; i++) {
+    const ox = src.x + rng() * src.w, oy = cy + (rng() - 0.5) * src.h * 0.6;
+    const base = rng() * Math.PI * 2, ph = rng() * 100, sp = 0.5 + rng();
+    const ang = base + Math.sin(t * P.speed * sp + ph) * P.sway;
+    const len = src.cell * P.reach * (0.45 + 0.55 * (0.5 + 0.5 * Math.sin(t * P.flicker * sp * 0.7 + ph * 1.7)))
+              * (0.5 + rng());
+    const a = P.alpha * (0.35 + 0.65 * Math.pow(0.5 + 0.5 * Math.sin(t * P.flicker * sp + ph), 2));
+    const half = P.width * (0.5 + rng());               // angular half-width, radians
+    const ex = ox + Math.cos(ang) * len, ey = oy + Math.sin(ang) * len;
+    const g = ctx.createLinearGradient(ox, oy, ex, ey);
+    g.addColorStop(0, Radiance.rgba(P.color, a));
+    g.addColorStop(0.3, Radiance.rgba(P.color, a * 0.5));
+    g.addColorStop(1, Radiance.rgba(P.color, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(ox, oy);
+    ctx.lineTo(ox + Math.cos(ang - half) * len, oy + Math.sin(ang - half) * len);
+    ctx.lineTo(ox + Math.cos(ang + half) * len, oy + Math.sin(ang + half) * len);
+    ctx.closePath(); ctx.fill();
+  }
+  radianceBloom(ctx, src, t, 2 + 0.4 * Math.sin(t * 0.9), P.bloom * (0.85 + 0.15 * Math.sin(t * 1.3)), P.color);
+};
+
+// shafts: slanting beams falling from above the window onto the word
+Radiance.effects.shafts = (ctx, src, t, P, rng) => {
+  const top = -src.cell * 4, bottom = src.y + src.h + src.cell * 2;
+  for (let i = 0; i < P.beams; i++) {
+    const u = rng(), ph = rng() * 100, wv = P.width * src.cell * (0.4 + rng());
+    const fx = src.x + (u + Math.sin(t * P.drift * (0.5 + rng()) + ph) * 0.15) * src.w;
+    const sx = fx - (bottom - top) * P.slant;
+    const a = P.alpha * (0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * 0.7 + ph)));
+    const g = ctx.createLinearGradient(0, top, 0, bottom);
+    g.addColorStop(0, Radiance.rgba(P.color, 0));
+    g.addColorStop(0.75, Radiance.rgba(P.color, a * 0.6));
+    g.addColorStop(1, Radiance.rgba(P.color, a));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(sx - wv * 1.6, top); ctx.lineTo(sx + wv * 1.6, top);
+    ctx.lineTo(fx + wv * 0.5, bottom); ctx.lineTo(fx - wv * 0.5, bottom);
+    ctx.closePath(); ctx.fill();
+  }
+  radianceBloom(ctx, src, t, 2, P.bloom, P.color);
+};
+
+// aura: a diaphanous, blobby glow rising off the letters themselves
+function radianceBlob(ctx, x, y, rad, a, color) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, rad);
+  g.addColorStop(0, Radiance.rgba(color, a));
+  g.addColorStop(0.4, Radiance.rgba(color, a * 0.55));
+  g.addColorStop(1, Radiance.rgba(color, 0));
+  ctx.fillStyle = g;
+  ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+}
+Radiance.effects.aura = (ctx, src, t, P, rng) => {
+  const gl = src.glyphs.length ? src.glyphs : [{ x: src.x + src.w / 2, y: src.y + src.h / 2 }];
+  const mix = (u) => P.color.map((c, i) => Math.round(c + (P.tint[i] - c) * u));
+  // each letter's own breath
+  for (const g of gl) {
+    const ph = rng() * 100;
+    const br = 0.5 + 0.5 * Math.sin(t * (0.6 + rng() * 0.6) + ph);
+    const wob = src.cell * 0.15;
+    radianceBlob(ctx, g.x + Math.sin(t * 0.7 + ph) * wob, g.y + Math.cos(t * 0.9 + ph) * wob,
+                 src.cell * P.core * (0.85 + 0.3 * br), P.coreAlpha * (0.6 + 0.4 * br), mix(rng() * P.tintMix));
+  }
+  // wisps: born on a letter, drifting up and outward, swelling as they fade
+  for (let i = 0; i < P.wisps; i++) {
+    const g = gl[Math.floor(rng() * gl.length)];
+    const life = P.life[0] + rng() * (P.life[1] - P.life[0]);
+    const off = rng() * life, ph = rng() * 100;
+    const k = ((t + off) % life) / life;                 // 0 → 1 over this wisp's life
+    const born = Math.floor((t + off) / life);           // each new life leaves from a different letter
+    const h = gl[(gl.indexOf(g) + born * 7) % gl.length];
+    const dx = Math.sin(t * 0.35 + ph) * P.wander * src.cell + Math.sin(ph) * k * P.wander * src.cell;
+    const dy = -k * P.rise * src.cell + Math.cos(t * 0.5 + ph) * 0.3 * src.cell;
+    const rad = src.cell * (P.wispSize[0] + (P.wispSize[1] - P.wispSize[0]) * (0.3 + 0.7 * k)) * (0.7 + 0.6 * rng());
+    radianceBlob(ctx, h.x + dx, h.y + dy, rad, P.wispAlpha * Math.sin(Math.PI * k), mix(rng() * P.tintMix));
+  }
+};
+
+// halo: only the glow, breathing; the plainest baseline for comparison
+Radiance.effects.halo = (ctx, src, t, P) =>
+  radianceBloom(ctx, src, t, P.size * (1 + 0.15 * Math.sin(t * P.breathe * 2)), P.alpha, P.color);
+
+// ---------- gravity ----------
+// The holy word is heavy, and the screen is a taut blanket under it.  While
+// one is visible, a WebGL canvas laid exactly over the terminal redraws it
+// through a displacement field that moves with the hovering word.
+//   creases: irregular folds radiating from the word, tight at its edge and
+//            easing flat with distance; material gathers into each fold, and
+//            each fold catches a little light.
+//   pucker:  the earlier version: every letter a dent, the cloth sinking in.
+//   ripple:  the floating word's own wave passes into what is around it,
+//            weakening with distance from the word.
+// The cells the word occupies (resting or lifted) are left flat, so the
+// terminal's own copy stays exactly where it is.
+// ?gravity=ripple|creases|pucker|off overrides CFG.gravity.mode; tune in CFG.gravity.
+CFG.gravity = {
+  mode: 'ripple',            // 'ripple', 'creases', 'pucker', or 'off'
+  // ripple
+  rippleReach: 5,            // distance from the word at which the wave has faded to a third, in line heights
+  rippleStrength: 2.5,       // 1 = the surroundings move exactly as much as the word beside them; more, and they swing wider
+  // creases
+  creases: 13,               // how many folds
+  amp: 1.0,                  // how much cloth each fold gathers, in line heights (varies per fold)
+  width: 0.14,               // angular width of a fold, radians (varies per fold)
+  reach: 4,                  // how far a fold runs before it eases flat, in line heights (varies)
+  drift: 0.05,               // slow wandering of the folds, radians
+  pull: 0.3,                 // the cloth drawn in toward the word overall, in line heights
+  pullReach: 2,
+  margin: 0.6,               // the folds start this far from the word's cells, in line heights
+  shade: 0.015,              // light caught along each fold
+  // pucker
+  radius: 2.2,               // reach of each letter's dent, in line heights
+  strength: 0.9,             // how hard the cloth is pulled (about 0.4 x radius at 1.0)
+  breathe: 0.08,             // slow swell of the pull, as a fraction
+  breatheHz: 0.15,
+};
+const Gravity = (() => {
+  const MAX = 64, MAXC = 24;
+  const cv = document.getElementById('gravity');
+  const q = new URLSearchParams(location.search).get('gravity');
+  const gl = cv.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: false });
+  if (!gl || (q ? q === 'off' : CFG.gravity.mode === 'off')) return { set() {} };
+  const sh = (type, src) => { const o = gl.createShader(type); gl.shaderSource(o, src); gl.compileShader(o);
+    if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, `
+    attribute vec2 a; varying vec2 uv;
+    void main() { uv = a * 0.5 + 0.5; gl_Position = vec4(a, 0.0, 1.0); }`));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, `
+    precision highp float;
+    uniform sampler2D tex; uniform vec2 size; uniform vec4 box; uniform int mode;
+    uniform vec2 pts[${MAX}]; uniform int n; uniform float R, S;          // pucker
+    uniform vec4 rest, word, cr[${MAXC}]; uniform int nc;                 // creases
+    uniform float L, pull, pullReach, margin, shade;
+    uniform float wamp, wphase, wlen, uoff, wreach, wstr;              // ripple
+    varying vec2 uv;
+    const float PI = 3.14159265, TAU = 6.2831853;
+    float sdBox(vec2 p, vec2 b) { vec2 d = abs(p) - b; return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0); }
+    void main() {
+      vec2 p = vec2(uv.x, 1.0 - uv.y) * size;          // canvas pixels, y down
+      if (p.x < box.x || p.y < box.y || p.x > box.z || p.y > box.w) {   // beyond any pull: flat
+        gl_FragColor = texture2D(tex, p / size); return;
+      }
+      vec2 q = p; float light = 0.0;
+      if (mode == 2) {
+        vec2 rc = (rest.xy + rest.zw) * 0.5, rb = (rest.zw - rest.xy) * 0.5;
+        float d = max(sdBox(p - rc, rb), 0.0) / L;     // line heights out from the word
+        float u = uoff + p.x / L;                      // the same place along the wave as the word uses
+        float lift = -wamp * (0.5 - 0.5 * cos(TAU * (wphase - u / wlen)));
+        q = p - vec2(0.0, lift * L * wstr * exp(-d / wreach));
+      } else if (mode == 0) {
+        float sum = 0.0; vec2 acc = vec2(0.0);
+        for (int i = 0; i < ${MAX}; i++) {
+          if (i >= n) break;
+          vec2 d = p - pts[i];
+          float g = exp(-dot(d, d) / (R * R));
+          sum += g; acc += d * g;
+        }
+        q = p + S * exp(-sum) * acc;
+      } else {
+        vec2 c = (word.xy + word.zw) * 0.5, hb = (word.zw - word.xy) * 0.5;
+        vec2 rc = (rest.xy + rest.zw) * 0.5, rb = (rest.zw - rest.xy) * 0.5;
+        float d = max(sdBox(p - c, hb), 0.0) / L;      // line heights out from the lifted word
+        float m = smoothstep(0.0, margin, min(d, max(sdBox(p - rc, rb), 0.0) / L));
+        vec2 sc = hb + vec2(L);                        // stretch the angles round a wide word
+        vec2 e = (p - c) / sc;
+        float th = atan(e.y, e.x);
+        vec2 nrm = normalize(e / sc + vec2(1e-6));
+        vec2 tg = vec2(-nrm.y, nrm.x);
+        float tang = 0.0, ridge = 0.0;
+        for (int i = 0; i < ${MAXC}; i++) {
+          if (i >= nc) break;
+          vec4 C = cr[i];                              // angle, amount, width, reach
+          float a = mod(th - C.x + PI, TAU) - PI;
+          float x = a / C.z, g = exp(-x * x), f = exp(-d / C.w);
+          tang += C.y * x * g * f;                     // cloth gathered toward the fold
+          ridge += abs(C.y) * g * f;
+        }
+        float rad = pull * exp(-d / pullReach);
+        q = p + (tg * tang + nrm * rad) * L * m;
+        light = shade * ridge * m;
+      }
+      gl_FragColor = texture2D(tex, q / size) + vec4(vec3(light), 0.0);
+    }`));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  const aLoc = gl.getAttribLocation(prog, 'a'); gl.enableVertexAttribArray(aLoc);
+  gl.vertexAttribPointer(aLoc, 2, gl.FLOAT, false, 0, 0);
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const U = {};
+  for (const name of ['size', 'box', 'mode', 'pts', 'n', 'R', 'S', 'rest', 'word', 'cr', 'nc', 'L', 'pull', 'pullReach', 'margin', 'shade',
+                      'wamp', 'wphase', 'wlen', 'uoff', 'wreach', 'wstr'])
+    U[name] = gl.getUniformLocation(prog, name);
+  let screen = null, pts = [], rest = null, folds = [], seed = 0, raf = 0, uploaded = -1;
+
+  function set(cellRects, scr) {
+    screen = scr;
+    pts = [];
+    for (const c of cellRects) for (const g of c.glyphs || []) pts.push((g.col + 0.5) * scr.cw, (g.row + 0.5) * scr.ch);
+    pts = pts.slice(0, MAX * 2);
+    if (!pts.length) { cv.style.display = 'none'; if (raf) cancelAnimationFrame(raf); raf = 0; return; }
+    // the word's cells at rest, in canvas pixels
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < pts.length; i += 2) {
+      x0 = Math.min(x0, pts[i]); x1 = Math.max(x1, pts[i]); y0 = Math.min(y0, pts[i + 1]); y1 = Math.max(y1, pts[i + 1]);
+    }
+    rest = [x0 - scr.cw / 2, y0 - scr.ch / 2, x1 + scr.cw / 2, y1 + scr.ch / 2];
+    // the folds: irregularly spaced, each its own strength, width and length
+    const P = CFG.gravity;
+    if (seed !== cellRects[0].seed || folds.length !== Math.min(P.creases, MAXC)) {
+      seed = cellRects[0].seed;
+      const rnd = Holy.rng(seed * 7919 + 13);
+      folds = [];
+      const nF = Math.min(P.creases, MAXC);
+      for (let i = 0; i < nF; i++) folds.push({
+        angle: (i + rnd() * 0.85) / nF * Math.PI * 2, amp: (0.35 + rnd() * 0.9) * (rnd() < 0.85 ? 1 : -0.6),
+        width: 0.6 + rnd() * 0.9, reach: 0.4 + rnd() * 1.0, rate: 0.03 + rnd() * 0.06, ph: rnd() * 100,
+      });
+    }
+    const v = scr.view;
+    if (cv.width !== v.width || cv.height !== v.height) { cv.width = v.width; cv.height = v.height; }
+    for (const k of ['left', 'top', 'width', 'height']) cv.style[k] = v.style[k];
+    cv.classList.toggle('smooth', v.classList.contains('smooth'));
+    cv.style.display = 'block';
+    frame(performance.now());                         // at once, so the warp never lags the screen
+  }
+  function frame(now) {
+    if (raf) { cancelAnimationFrame(raf); raf = 0; }
+    if (!pts.length) return;
+    const P = CFG.gravity, t = Holy.time(now), Lh = screen.ch;
+    const dy = Holy.lift(t) * Lh;                     // the field rides with the floating word
+    if (uploaded !== screen.version) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, screen.view);
+      uploaded = screen.version;
+    }
+    gl.viewport(0, 0, cv.width, cv.height);
+    gl.uniform2f(U.size, cv.width, cv.height);
+    const MODES = { pucker: 0, creases: 1, ripple: 2 };
+    const mode = MODES[q] ?? MODES[P.mode] ?? 2;
+    gl.uniform1i(U.mode, mode);
+    let reach;
+    if (mode === 2) {
+      const Lv = CFG.levitate, b = screen.view.getBoundingClientRect();
+      gl.uniform4f(U.rest, ...rest);
+      gl.uniform1f(U.L, Lh);
+      gl.uniform1f(U.wamp, Lv.amp); gl.uniform1f(U.wphase, t / Lv.period); gl.uniform1f(U.wlen, Lv.wavelength);
+      gl.uniform1f(U.uoff, b.left / (Lh * b.height / screen.view.height));   // window left edge, in line heights
+      gl.uniform1f(U.wreach, P.rippleReach); gl.uniform1f(U.wstr, P.rippleStrength);
+      reach = P.rippleReach * 7 * Lh;                  // past seven reaches the wave is under a thousandth
+    } else if (mode === 0) {
+      const flat = new Float32Array(MAX * 2); flat.set(pts);
+      for (let i = 1; i < pts.length; i += 2) flat[i] += dy;
+      gl.uniform2fv(U.pts, flat);
+      gl.uniform1i(U.n, pts.length / 2);
+      gl.uniform1f(U.R, P.radius * Lh);
+      gl.uniform1f(U.S, P.strength * (1 + P.breathe * Math.sin(t * Math.PI * 2 * P.breatheHz)));
+      reach = P.radius * Lh * 3.5;                   // past 3.5 radii a dent is under a thousandth
+    } else {
+      const cr = new Float32Array(MAXC * 4);
+      folds.forEach((f, i) => {
+        cr[i * 4] = f.angle + P.drift * Math.sin(t * f.rate * Math.PI * 2 + f.ph);
+        cr[i * 4 + 1] = P.amp * f.amp;
+        cr[i * 4 + 2] = P.width * f.width;
+        cr[i * 4 + 3] = P.reach * f.reach;
+      });
+      gl.uniform4fv(U.cr, cr);
+      gl.uniform1i(U.nc, folds.length);
+      gl.uniform4f(U.rest, ...rest);
+      gl.uniform4f(U.word, rest[0], rest[1] + dy, rest[2], rest[3] + dy);
+      gl.uniform1f(U.L, Lh);
+      gl.uniform1f(U.pull, P.pull); gl.uniform1f(U.pullReach, P.pullReach);
+      gl.uniform1f(U.margin, P.margin); gl.uniform1f(U.shade, P.shade);
+      reach = P.reach * 1.4 * Lh * 4;                  // the longest fold, out to where it is nearly flat
+    }
+    gl.uniform4f(U.box, rest[0] - reach, rest[1] - reach + Math.min(0, dy), rest[2] + reach, rest[3] + reach);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    raf = requestAnimationFrame(frame);
+  }
+  return { set };
+})();
 
 // ---------- placeholder word generator ----------
 // Stage 1 only: enough phonology to make the interface feel real.
@@ -315,15 +822,17 @@ const UPGRADES = [
   { id: 'honeyed', cost: 9000, penalty: 30000, title: 'Honeyed Word ©2007', heb: 'דבגטפנמלמלמל', rom: 'de-va-ge-ta-pe-na-mel-mel-mel', charges: 100, desc: 'Flawless speech' },
 ];
 
+// not for sale.  the vavs are read as vowels, so they are counted but never said.
+const MKTS = { rom: 'ma-mon-kol-tsom-su-lam', heb: 'ממון קול צום סולם', cents: 13600000000 };
+
 // ---------- the SPEAK tab ----------
 const state = {
   tab: 'SPEAK',
   tabs: ['SPEAK', 'UPGRADE', 'OFFICE'],
   cents: 0,
   amulets: [],             // the five currently on offer
-  owned: [],               // licences bought and not yet spoken: single-use contracts
+  queue: [],               // licences bought and not yet spoken, in purchase order: one utterance each
   charges: {},             // id -> words of effect remaining
-  pending: {},             // id -> charges bought but not yet earned by speaking the word
   sel: 0,                  // highlighted row on the UPGRADE tab
   typed: [],               // every consonant key of the current attempt, right or wrong
   modal: null,             // a notice that seizes the screen until a key is pressed
@@ -365,8 +874,10 @@ const INTRO = (() => {
 })();
 
 function logLine(text, fg = CFG.colors.fg, bold = false, heb = null, val = null, earned = null, amulet = null, contract = false) {
-  state.log.push({ text, fg, bold, heb, val, earned, amulet, contract });
+  const ln = { text, fg, bold, heb, val, earned, amulet, contract };
+  state.log.push(ln);
   if (state.log.length > 500) state.log.shift();
+  return ln;
 }
 
 // build a word from a romanization and its hebrew, e.g. an upgrade's own word
@@ -393,7 +904,14 @@ function setWord(word) {
   state.ci = 0; state.li = 0;
 }
 
+function contractWord(id) {
+  const u = UPGRADES.find(x => x.id === id);
+  const w = wordFrom(u.rom, u.heb); w.free = true; w.grants = u.id;
+  return w;
+}
 function newWord() {
+  // a bought word waits at the microphone until it has been said
+  if (state.queue.length) { setWord(contractWord(state.queue[0])); return; }
   state.word = makeWord();
   if (wakingActive() || Math.random() < CFG.juice) {
     // rigged: keep rolling until a word lands on one of the amulets on offer,
@@ -449,13 +967,7 @@ function speakSuccess() {
       delete a.won;
       replenishAmulets();
     }
-    if (state.word.grants) {                      // the bought word, now spoken: its power arrives
-      const id = state.word.grants;
-      state.charges[id] = (state.charges[id] || 0) + (state.pending[id] || 0);   // +20 per purchase
-      delete state.pending[id];
-      state.owned = state.owned.filter(x => x !== id);     // the licence was for one utterance
-      replenishAmulets();
-    }
+    if (state.word.grants) redeem(state.word.grants);   // the bought word, now spoken
     if (!state.word.free) for (const id of Object.keys(state.charges)) {
       if (--state.charges[id] <= 0) delete state.charges[id];
     }
@@ -473,13 +985,42 @@ function clearBox() {
   state.typed = [];
 }
 
+// a licence is spent: its power arrives and the first copy of it leaves the queue
+function redeem(id) {
+  const u = UPGRADES.find(x => x.id === id);
+  state.charges[id] = (state.charges[id] || 0) + (u.charges || 0);   // one purchase's worth
+  const i = state.queue.indexOf(id);
+  if (i >= 0) state.queue.splice(i, 1);           // the licence was for one utterance
+  replenishAmulets();
+}
+
 // ---------- the law ----------
 function detectViolation() {
-  // speaking a proprietary word you have not paid for, in any context
+  // speaking a proprietary word you have not paid for, in any context.
+  // a word you have paid for but not yet said is licensed whenever it comes out:
+  // saying it out of purchase order is no business of the law's, and it counts.
   const said = state.typed.join('');
+  if (said.endsWith(MKTS.rom.replace(/[-aeiou]/g, ''))) {
+    logLine(`  ${MKTS.rom.toUpperCase()}`, CFG.colors.bright, true, MKTS.heb, gval(MKTS.heb)).holy = true;
+    if (state.cents < MKTS.cents) earn(MKTS.cents - state.cents);   // raises you to it, never lowers
+    clearBox();
+    save();
+    return true;
+  }
   for (const u of UPGRADES) {
     const key = u.rom.replace(/[-aeiou]/g, '');
-    if (said.endsWith(key) && !state.owned.includes(u.id)) { violate(u); return true; }
+    if (!said.endsWith(key)) continue;
+    if (!state.queue.includes(u.id)) { violate(u); return true; }
+    if (state.holding && state.word.grants === u.id) return false;   // said at the microphone, in order: speakSuccess has it
+    const label = u.title.replace(/\s*©.*$/, '').toUpperCase();
+    logLine(`  ${u.rom.toUpperCase()}`, CFG.colors.contract, false, u.heb, gval(u.heb), null, null, label);
+    redeem(u.id);
+    // the attempt is over.  if the contract at the microphone was the one just
+    // spent, the next licence (or an ordinary word) takes its place.
+    clearBox();
+    if (state.word.free && state.word.grants !== state.queue[0]) newWord();
+    save();
+    return true;
   }
   return false;
 }
@@ -545,13 +1086,11 @@ function handleKey(e) {
       const u = UPGRADES[state.sel];
       if (u && state.cents >= u.cost) {
         earn(-u.cost);
-        if (!state.owned.includes(u.id)) state.owned.push(u.id);
-        state.pending[u.id] = (state.pending[u.id] || 0) + (u.charges || 0);
-        // you are sent back to speak the word you just bought.  nothing is
-        // granted until you have said it, and saying it costs no charge.
-        clearBox();
-        const w = wordFrom(u.rom, u.heb); w.free = true; w.grants = u.id;
-        setWord(w);
+        state.queue.push(u.id);
+        // you are sent back to speak the words you have bought, in the order
+        // bought.  nothing is granted until a word is said, and saying it costs
+        // no charge.  a contract already at the microphone keeps its place.
+        if (!state.word || !state.word.free) { clearBox(); newWord(); }
         state.tab = 'SPEAK';
         save();
       }
@@ -586,6 +1125,42 @@ function handleKey(e) {
 }
 
 // ---------- drawing ----------
+// a ledger row may take several lines.  the hebrew breaks between words (or,
+// failing that, wherever the column ends) and each line hugs the right edge;
+// the romanization breaks after a hyphen and each line hugs the left edge.
+function wrapHeb(str, width) {
+  const lines = [];
+  let cur = '';
+  for (let word of str.split(' ').filter(Boolean)) {
+    while ([...word].length > width) {                 // a word too long for the column is cut
+      if (cur) { lines.push(cur); cur = ''; }
+      lines.push([...word].slice(0, width).join(''));
+      word = [...word].slice(width).join('');
+    }
+    if (!cur) cur = word;
+    else if ([...cur].length + 1 + [...word].length <= width) cur += ' ' + word;
+    else { lines.push(cur); cur = word; }
+  }
+  if (cur) lines.push(cur);
+  return lines.length ? lines : [''];
+}
+function wrapRom(text, width) {
+  const syls = text.split('-'), lines = [];
+  let cur = '';
+  syls.forEach((syl, i) => {
+    const piece = syl + (i < syls.length - 1 ? '-' : '');
+    if (cur && cur.length + piece.length > width) { lines.push(cur); cur = ''; }
+    cur += piece;
+  });
+  if (cur) lines.push(cur);
+  return lines.map(l => l.slice(0, width));
+}
+function ledgerLines(ln) {
+  if (!ln.heb) return { heb: [], rom: [], n: 1 };
+  const heb = wrapHeb(ln.heb, CFG.hebCol), rom = wrapRom(ln.text.trim(), CFG.romCol);
+  return { heb, rom, n: Math.max(heb.length, rom.length) };
+}
+
 function drawSpeak(x0, y0, w, h) {
   const C = CFG.colors;
   // (column widths above are chosen so the six history columns fit the panel)
@@ -600,24 +1175,36 @@ function drawSpeak(x0, y0, w, h) {
   // history is anchored to the row above the prompt and grows upward; the
   // welcome is pinned to the top until the history reaches it, after which
   // the welcome is pushed up (and off) one row per new word.
-  const histTop = y0 + logRows - state.log.length;
+  const wraps = state.log.map(ledgerLines);
+  const histTop = y0 + logRows - wraps.reduce((a, x) => a + x.n, 0);
   const introTop = Math.min(y0, histTop - 1 - state.intro.length);
   state.intro.forEach((t, i) => { const rr = introTop + i; if (rr >= y0) scr.text(x0, rr, t.slice(0, w), CFG.colors.fg); });
   let r = histTop;
-  for (const ln of state.log) {
-    if (r < y0) { r++; continue; }
+  state.log.forEach((ln, li) => {
+    const wr = wraps[li];
+    if (r + wr.n - 1 < y0) { r += wr.n; return; }        // wholly above the panel
+    if (ln.holy) {                                       // the light falls on the hebrew and its reading
+      const top = Math.max(r, y0), c0 = x0 + CFG.valCol + CFG.gap, cr = c0 + CFG.hebCol + CFG.gap;
+      const glyphs = [];
+      wr.heb.forEach((t, i) => [...t].forEach((ch, j) => { if (ch !== ' ') glyphs.push({ col: c0 + CFG.hebCol - 1 - j, row: r + i, ch }); }));
+      wr.rom.forEach((t, i) => [...t].forEach((ch, j) => { if (ch !== ' ') glyphs.push({ col: cr + j, row: r + i, ch }); }));
+      holyCells.push({ col: c0, row: top, w: CFG.hebCol + CFG.gap + CFG.romCol, h: r + wr.n - top, seed: li + 1,
+                       glyphs: glyphs.filter(g => g.row >= y0) });
+    }
     if (ln.heb) {
       // columns: gematria | hebrew | romanization | earned | amulet hebrew | amulet gloss
       // (same order as the amulet panel: number, hebrew, then the rest)
       let cx = x0;
-      if (ln.val != null) { const v = String(ln.val); scr.text(cx + CFG.valCol - v.length, r, v, ln.fg); }
+      if (ln.val != null && r >= y0) { const v = String(ln.val); scr.text(cx + CFG.valCol - v.length, r, v, ln.fg); }
       cx += CFG.valCol + CFG.gap;
-      putHebrew(cx + CFG.hebCol - 1, r, ln.heb, ln.fg, ln.bold);            cx += CFG.hebCol + CFG.gap;
-      scr.text(cx, r, ln.text.trim().slice(0, CFG.romCol), ln.fg, null, ln.bold);   cx += CFG.romCol + CFG.gap;
-      if (ln.contract) {
-        scr.text(cx + CFG.earnCol - 1, r, '—', ln.fg);                       // an em dash where the money would be
-        scr.text(cx + CFG.earnCol + CFG.gap, r, ln.contract, ln.fg, null, true);   // and its name where the amulet would be
-      }
+      const tf = ln.holy && Levitate.floating ? CFG.levitate.restColor : ln.fg;   // a floating word leaves its place
+      if (tf) wr.heb.forEach((t, i) => { if (r + i >= y0) putHebrew(cx + CFG.hebCol - 1, r + i, t, tf, ln.bold); });
+      cx += CFG.hebCol + CFG.gap;
+      if (tf) wr.rom.forEach((t, i) => { if (r + i >= y0) scr.text(cx, r + i, t, tf, null, ln.bold); });
+      cx += CFG.romCol + CFG.gap;
+      if (r < y0) { r += wr.n; return; }                   // first line scrolled off: so have the one-line columns
+      if (ln.contract || ln.holy) scr.text(cx + CFG.earnCol - 1, r, '—', ln.fg);   // an em dash where the money would be
+      if (ln.contract) scr.text(cx + CFG.earnCol + CFG.gap, r, ln.contract, ln.fg, null, true);   // and its name where the amulet would be
       if (ln.earned != null) {
         // "$ .25" for small change so that "$5.25" stands out
         // "$ .25" for small change; whole dollars without cents so a penalty fits the column
@@ -631,8 +1218,8 @@ function drawSpeak(x0, y0, w, h) {
         scr.text(cx, r, (ln.amulet.gloss || ln.amulet.rom || '').slice(0, x0 + w - cx), C.money, null, true);
       }
     } else scr.text(x0, r, ln.text.slice(0, w), ln.fg, null, ln.bold);
-    r++;
-  }
+    r += wr.n;
+  });
 
   // a divider across the whole pane, joined to the panel border on both sides
   const dy = y0 + logRows;
@@ -857,9 +1444,11 @@ function draw() {
   drawPending = true;
   requestAnimationFrame(() => { drawPending = false; drawNow(); });
 }
+let holyCells = [];        // cell rects of the holy rows on screen, for the radiance
 function drawNow() {
   const C = CFG.colors;
   scr.clear();
+  holyCells = [];
   const cols = scr.cols, rows = scr.rows;
 
   // title row
@@ -896,6 +1485,9 @@ function drawNow() {
     drawModal();
   }
   scr.render();
+  Radiance.set(modalVisible() ? [] : holyCells, scr);   // the notice seizes the screen; the light waits
+  Gravity.set(modalVisible() ? [] : holyCells, scr);    // and the cloth lies flat again
+  Levitate.set(modalVisible() ? [] : holyCells, scr);   // and the word settles back into the glass
 }
 
 // ---------- persistence ----------
@@ -904,7 +1496,7 @@ function save() {
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       cents: state.cents, amulets: state.amulets.map(a => a.heb), log: state.log.slice(-200),
-      owned: state.owned, charges: state.charges, pending: state.pending, infractions: state.infractions,
+      queue: state.queue, charges: state.charges, infractions: state.infractions,
       modal: state.modal ? { kind: state.modal.kind, id: state.modal.id, showAt: state.modal.showAt, applied: state.modal.applied } : null,
     }));
   } catch (e) { /* private window or storage disabled: play on without memory */ }
@@ -921,9 +1513,13 @@ function load() {
     state.cents = d.cents || 0;
     state.amulets = (d.amulets || []).map(h => AMULET_POOL.find(a => a.heb === h)).filter(Boolean);
     state.log = d.log || [];
-    state.owned = d.owned || [];
     state.charges = d.charges || {};
-    state.pending = d.pending || {};
+    if (Array.isArray(d.queue)) state.queue = d.queue.filter(id => UPGRADES.some(u => u.id === id));
+    else for (const id of d.owned || []) {     // an older save: one licence per purchase still owed
+      const u = UPGRADES.find(x => x.id === id);
+      const n = u && u.charges ? Math.max(1, Math.round(((d.pending || {})[id] || 0) / u.charges)) : u ? 1 : 0;
+      for (let k = 0; k < n; k++) state.queue.push(id);
+    }
     state.infractions = d.infractions || 0;
     state.modal = d.modal || null;
     return true;
@@ -932,7 +1528,7 @@ function load() {
 
 // ---------- boot ----------
 const scr = new Screen();
-window.addEventListener('resize', () => { scr.resize(); draw(); });
+window.addEventListener('resize', () => { scr.resize(); draw(); });   // (the radiance resizes itself)
 window.addEventListener('keydown', e => { handleKey(e); draw(); });
 
 window.addEventListener('error', e => {
