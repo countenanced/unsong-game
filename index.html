@@ -91,7 +91,7 @@ const CFG = {
   sideCols: 38,            // width of the AMULETS side panel
   activeRows: 6,           // height of the ACTIVE NAMES frame beneath it, borders included
   lowCharges: 5,           // at or below this many charges a name's row turns red
-  expiredMs: 1000,         // a spent name lingers this long, white on red, before it is struck off
+  expiredMs: 0,            // a spent name lingers this long, white on red, before it is struck off (0: no flash)
   amuletsShown: 5,
   juice: 0.08,             // chance that a word is rigged to match an amulet (?juice=0 to disable)
   boxCols: 20,
@@ -975,8 +975,10 @@ function speakSuccess() {
     if (!state.word.free) for (const id of Object.keys(state.charges)) {
       if (--state.charges[id] <= 0) {
         delete state.charges[id];
-        state.expired[id] = Date.now() + CFG.expiredMs;     // shown spent for a moment, so you notice
-        setTimeout(draw, CFG.expiredMs + 20);
+        if (CFG.expiredMs > 0) {                           // shown spent for a moment, so you notice
+          state.expired[id] = Date.now() + CFG.expiredMs;
+          setTimeout(draw, CFG.expiredMs + 20);
+        }
       }
     }
     state.holding = false; state.matchHold = false;
