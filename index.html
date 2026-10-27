@@ -1348,10 +1348,16 @@ function drawSpeak(x0, y0, w, h) {
 // the bought names now in force, with the words of effect each has left
 function drawActive(x0, y0, w, h) {
   const C = CFG.colors, head = 'CHARGES REMAINING';
+  const live = UPGRADES.filter(u => (state.charges[u.id] || 0) > 0);   // only names in force: spent ones drop off
+  if (!live.length) {                                // no table, just the word from the company
+    const lines = [''];
+    for (const wd of 'No active names. You can buy names from the company store.'.split(' '))
+      if ((lines.at(-1) + ' ' + wd).trim().length > w) lines.push(wd); else lines[lines.length - 1] = (lines.at(-1) + ' ' + wd).trim();
+    lines.slice(0, h).forEach((l, i) => scr.text(x0, y0 + i, l, C.fg));
+    return;
+  }
   scr.text(x0, y0, 'NAME', C.fg, null, true);
   scr.text(x0 + w - head.length, y0, head, C.fg, null, true);
-  const live = UPGRADES.filter(u => (state.charges[u.id] || 0) > 0);
-  if (!live.length) scr.text(x0, y0 + 1, 'None.', C.dim);
   live.slice(0, h - 1).forEach((u, i) => {
     const n = String(state.charges[u.id]);
     scr.text(x0, y0 + 1 + i, u.title.replace(/\s*©.*$/, '').toUpperCase(), C.contract, null, true);
