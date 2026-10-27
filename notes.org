@@ -140,5 +140,9 @@ MAMON-KOL-TSOM-SULAM
 13. Ciagrette breaks may show an ascii art cigarette (with the tan and
     white and maybe ash and ember) burning slowly down as a progress
     bar.
+14. Tell the player that names stack, e.g. the empty ACTIVE NAMES
+    frame saying "...from the company store. Names stack." Probably
+    too metagame and out of universe as written; maybe find an
+    in-fiction way to say it (licensing fine print?).
     
    
