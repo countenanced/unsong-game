@@ -825,8 +825,21 @@ const UPGRADES = [
   { id: 'honeyed', cost: 9000, penalty: 30000, title: 'Honeyed Word ©2007', heb: 'דבגטפנמלמלמל', rom: 'de-va-ge-ta-pe-na-mel-mel-mel', charges: 100, desc: 'Flawless speech' },
 ];
 
-// not for sale.  the vavs are read as vowels, so they are counted but never said.
-const MKTS = { rom: 'ma-mon-kol-tsom-su-lam', heb: 'ממון קול צום סולם', cents: 13600000000 };
+const PROTECTED = UPGRADES;                           // everything the law watches for
+const protectedById = id => PROTECTED.find(x => x.id === id);
+const consonantKey = rom => rom.replace(/[-aeiou]/g, '');
+
+// names that are in no catalogue: no licence, no strike, they simply work,
+// said anywhere.  a holy one is dressed in light; the others are written in
+// the contract blue, like the names the Company sells.
+const SECRET_NAMES = [
+  // wealth.  the vavs are read as vowels, so they are counted but never said.
+  { rom: 'ma-mon-kol-tsom-su-lam', heb: 'ממון קול צום סולם', holy: true,
+    effect() { if (state.cents < 13600000000) earn(13600000000 - state.cents); } },   // raises you to it, never lowers
+  // nothingness: whatever you owe comes to nothing
+  { rom: 'to-hu-va-vo-hu', heb: 'תהו ובהו',
+    effect() { if (state.cents < 0) earn(-state.cents); } },
+];
 
 // ---------- the SPEAK tab ----------
 const state = {
@@ -913,16 +926,25 @@ function contractWord(id) {
   const w = wordFrom(u.rom, u.heb); w.free = true; w.grants = u.id;
   return w;
 }
+// an ordinary word must never contain a protected or secret name: saying the
+// word you were given cannot be an infraction, or a windfall
+const SPOKEN_KEYS = [...PROTECTED, ...SECRET_NAMES].map(u => consonantKey(u.rom));
+const consonantsOf = w => w.filter(s => s.t === 'C' && !s.silent).map(s => s.rom).join('');
+const innocent = w => !SPOKEN_KEYS.some(k => consonantsOf(w).includes(k));
+function makeInnocentWord() {
+  for (let i = 0; i < 1000; i++) { const w = makeWord(); if (innocent(w)) return w; }
+  return makeWord();
+}
 function newWord() {
   // a bought word waits at the microphone until it has been said
   if (state.stack.length) { setWord(contractWord(state.stack.at(-1))); return; }   // the newest first
-  state.word = makeWord();
+  state.word = makeInnocentWord();
   if (wakingActive() || Math.random() < CFG.juice) {
     // rigged: keep rolling until a word lands on one of the amulets on offer,
     // but never by simply being that amulet letter for letter
     const targets = new Set(state.amulets.map(a => a.val));
     for (let i = 0; i < 5000; i++) {
-      const w = makeWord();
+      const w = makeInnocentWord();
       if (targets.has(gematria(w)) && !AMULET_SPELLINGS.has(hebrew(w))) { state.word = w; break; }
     }
   }
@@ -1010,15 +1032,18 @@ function detectViolation() {
   // a word you have paid for but not yet said is licensed whenever it comes out:
   // saying it out of purchase order is no business of the law's, and it counts.
   const said = state.typed.join('');
-  if (said.endsWith(MKTS.rom.replace(/[-aeiou]/g, ''))) {
-    logLine(`  ${MKTS.rom.toUpperCase()}`, CFG.colors.bright, true, MKTS.heb, gval(MKTS.heb)).holy = true;
-    if (state.cents < MKTS.cents) earn(MKTS.cents - state.cents);   // raises you to it, never lowers
+  for (const sn of SECRET_NAMES) {
+    if (!said.endsWith(consonantKey(sn.rom))) continue;
+    const ln = sn.holy ? logLine(`  ${sn.rom.toUpperCase()}`, CFG.colors.bright, true, sn.heb, gval(sn.heb))
+                       : logLine(`  ${sn.rom.toUpperCase()}`, CFG.colors.contract, false, sn.heb, gval(sn.heb));
+    if (sn.holy) ln.holy = true; else ln.unlisted = true;   // light, or just the blue and a dash
+    sn.effect();
     clearBox();
     save();
     return true;
   }
-  for (const u of UPGRADES) {
-    const key = u.rom.replace(/[-aeiou]/g, '');
+  for (const u of PROTECTED) {
+    const key = consonantKey(u.rom);
     if (!said.endsWith(key)) continue;
     if (!state.stack.includes(u.id)) { violate(u); return true; }
     if (state.holding && state.word.grants === u.id) return false;   // said at the microphone, in order: speakSuccess has it
@@ -1046,7 +1071,7 @@ function violate(u) {
 const modalVisible = () => state.modal && Date.now() >= (state.modal.showAt || 0);
 function applyViolation(m) {
   // the fine and the record land the moment the notice appears, once
-  const u = UPGRADES.find(x => x.id === m.id);
+  const u = protectedById(m.id);
   earn(-u.penalty);
   state.infractions++;
   logLine(`  ${u.rom.toUpperCase()}`, CFG.colors.bad, true, u.heb, gval(u.heb), -u.penalty);
@@ -1214,7 +1239,7 @@ function drawSpeak(x0, y0, w, h) {
       if (tf) wr.rom.forEach((t, i) => { if (r + i >= y0) scr.text(cx, r + i, t, tf, null, ln.bold); });
       cx += CFG.romCol + CFG.gap;
       if (r < y0) { r += wr.n; return; }                   // first line scrolled off: so have the one-line columns
-      if (ln.contract || ln.holy) scr.text(cx + CFG.earnCol - 1, r, '—', ln.fg);   // an em dash where the money would be
+      if (ln.contract || ln.holy || ln.unlisted) scr.text(cx + CFG.earnCol - 1, r, '—', ln.fg);   // an em dash where the money would be
       if (ln.contract) scr.text(cx + CFG.earnCol + CFG.gap, r, ln.contract, ln.fg, null, true);   // and its name where the amulet would be
       if (ln.earned != null) {
         // "$ .25" for small change so that "$5.25" stands out
@@ -1434,7 +1459,7 @@ function drawUpgrade(x0, y0, w, h) {
 
 function drawModal() {
   const C = CFG.colors, m = state.modal;
-  const u = UPGRADES.find(x => x.id === m.id);
+  const u = protectedById(m.id);
   const W = 62, inner = W - 4;
   const paras = [
     'You have been found in violation of federal intellectual property law (17 U.S.C. § 501).',
