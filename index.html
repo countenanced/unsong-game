@@ -828,7 +828,7 @@ const MKTS = { rom: 'ma-mon-kol-tsom-su-lam', heb: 'ממון קול צום סו�
 // ---------- the SPEAK tab ----------
 const state = {
   tab: 'SPEAK',
-  tabs: ['SPEAK', 'BUY NAMES', 'OFFICE'],
+  tabs: ['SPEAK', 'BUY NAMES', 'OFFICE', 'CLOCK OUT'],
   cents: 0,
   amulets: [],             // the five currently on offer
   stack: [],               // licences bought and not yet spoken, newest last: one utterance each, last in first out
@@ -1455,6 +1455,10 @@ function drawOffice(x0, y0, w, h) {
   scr.text(x0 + 1, y0 + 1, 'Your office has no decorations.', CFG.colors.fg);
 }
 
+function drawClockOut(x0, y0, w, h) {
+  scr.text(x0 + 1, y0 + 1, "It's not time to take a break yet.", CFG.colors.fg);
+}
+
 let drawPending = false;
 let perfMsg = null;        // dev: shown on the title row when ?perf is used
 function draw() {
@@ -1484,13 +1488,15 @@ function drawNow() {
     scr.box(pw, py, side, ph, 'AMULETS');
     drawSide(pw + 2, iy, side - 4, ih);
   } else if (state.tab === 'BUY NAMES') drawUpgrade(ix, iy, iw, ih);
-  else drawOffice(ix, iy, iw, ih);
+  else if (state.tab === 'OFFICE') drawOffice(ix, iy, iw, ih);
+  else drawClockOut(ix, iy, iw, ih);
 
   // tab bar
   const ty = rows - 1;
   scr.fill(0, ty, cols, 1, ' ', C.tabFg, C.tabBg);
   let tx = 1;
   for (const t of state.tabs) {
+    if (t === 'CLOCK OUT') tx += 2;                  // set a little apart: leaving is not like the others
     const label = ` ${t} `;
     const active = t === state.tab || (t === 'BUY NAMES' && state.tabBlink > 0 && state.blinkOn);
     scr.text(tx, ty, label, active ? C.tabActFg : C.tabFg, active ? C.tabActBg : C.tabBg, active);
