@@ -802,7 +802,7 @@ function replenishAmulets() {
   state.amulets.sort((a, b) => a.val - b.val);
 }
 
-// money changes go through here so the UPGRADE tab can notice a price being crossed
+// money changes go through here so the BUY NAMES tab can notice a price being crossed
 function earn(delta) {
   const before = UPGRADES.filter(u => state.cents >= u.cost).length;
   state.cents += delta;
@@ -828,16 +828,16 @@ const MKTS = { rom: 'ma-mon-kol-tsom-su-lam', heb: 'ממון קול צום סו�
 // ---------- the SPEAK tab ----------
 const state = {
   tab: 'SPEAK',
-  tabs: ['SPEAK', 'UPGRADE', 'OFFICE'],
+  tabs: ['SPEAK', 'BUY NAMES', 'OFFICE'],
   cents: 0,
   amulets: [],             // the five currently on offer
   queue: [],               // licences bought and not yet spoken, in purchase order: one utterance each
   charges: {},             // id -> words of effect remaining
-  sel: 0,                  // highlighted row on the UPGRADE tab
+  sel: 0,                  // highlighted row on the BUY NAMES tab
   typed: [],               // every consonant key of the current attempt, right or wrong
   modal: null,             // a notice that seizes the screen until a key is pressed
   infractions: 0,          // the permanent record
-  tabBlink: 0,             // half-blinks left on the UPGRADE tab after money crosses a price
+  tabBlink: 0,             // half-blinks left on the BUY NAMES tab after money crosses a price
   intro: [],               // the welcome, pinned at the top
   log: [],                 // history lines: {text, fg, bold, heb}
   word: null,
@@ -1079,11 +1079,12 @@ function handleKey(e) {
     state.tab = state.tabs[(i + (e.key === 'ArrowLeft' ? n - 1 : 1)) % n];
     return;
   }
-  if (state.tab === 'UPGRADE') {
-    if (e.key === 'ArrowDown') state.sel = Math.min(state.sel + 1, UPGRADES.length - 1);
-    else if (e.key === 'ArrowUp') state.sel = Math.max(state.sel - 1, 0);
+  if (state.tab === 'BUY NAMES') {
+    const can = buyable(), at = can.indexOf(selected());
+    if (e.key === 'ArrowDown' && at >= 0) state.sel = can[Math.min(at + 1, can.length - 1)];
+    else if (e.key === 'ArrowUp' && at >= 0) state.sel = can[Math.max(at - 1, 0)];
     else if (e.key === 'Enter') {
-      const u = UPGRADES[state.sel];
+      const u = UPGRADES[selected()];
       if (u && state.cents >= u.cost) {
         earn(-u.cost);
         state.queue.push(u.id);
@@ -1254,7 +1255,7 @@ function drawSpeak(x0, y0, w, h) {
     let fg = C.vowel, bold = false;
     if (s.silent) fg = C.vowel;
     else if (k < state.ci) fg = C.dim;
-    else if (k === state.ci) { fg = C.primary; bold = true; }
+    else if (k === state.ci) { fg = word.free ? C.contract : C.primary; bold = true; }   // a bought word: blue
     else fg = C.secondary;
     scr.put(col, py, s.heb, lit ? C.bg : fg, lit, lit ? true : bold);     // same row as the romanization
   });
@@ -1271,13 +1272,22 @@ function drawSpeak(x0, y0, w, h) {
       [...s.rom].forEach((ch, j) => {
         let fg = C.secondary, bold = false;
         if (k < state.ci || (k === state.ci && j < state.li)) fg = C.dim;
-        else if (k === state.ci) { fg = C.primary; bold = true; }
+        else if (k === state.ci) { fg = word.free ? C.contract : C.primary; bold = true; }
         rom.push({ ch: ch.toUpperCase(), fg, bold });
       });
     }
   }
   const rx = hx + 1 + CFG.gap;
   rom.forEach((c, i) => scr.put(rx + i, py, c.ch, lit ? C.bg : c.fg, lit, lit ? true : c.bold));
+  if (word.free) {
+    // a bought word is named where its ledger line will name it: a dash where
+    // the money would be (if the word leaves room) and its title after it
+    const u = UPGRADES.find(x => x.id === word.grants);
+    const label = (u ? u.title : 'contract').replace(/\s*©.*$/, '').toUpperCase();
+    const dashX = rx + CFG.romCol + CFG.gap + CFG.earnCol - 1;
+    if (rx + rom.length < dashX - 1) scr.put(dashX, py, '—', C.contract);
+    scr.text(Math.max(dashX + 1 + CFG.gap, rx + rom.length + CFG.gap), py, label, C.contract, null, true);
+  }
 
   // --- input box: ghost consonants in grey that you overwrite as you type ---
   const inp = [];
@@ -1354,6 +1364,15 @@ function drawSide(x0, y0, w, h) {
   });
 }
 
+// only names you can afford can be selected; with none, nothing is
+function buyable() { return UPGRADES.map((u, i) => i).filter(i => state.cents >= UPGRADES[i].cost); }
+function selected() {
+  const can = buyable();
+  if (!can.length) return -1;
+  if (can.includes(state.sel)) return state.sel;
+  const below = can.filter(i => i < state.sel);                 // money ran short: the nearest above it
+  return below.length ? below[below.length - 1] : can[0];
+}
 function drawUpgrade(x0, y0, w, h) {
   const C = CFG.colors;
   scr.text(x0 + 1, y0, 'Speech licenses valid for ONE USE ONLY per purchase.', C.fg);
@@ -1366,7 +1385,7 @@ function drawUpgrade(x0, y0, w, h) {
   UPGRADES.forEach((u, i) => {
     const r = y0 + 4 + i;
     const can = state.cents >= u.cost;
-    const hi = i === state.sel;
+    const hi = i === selected();
     // too expensive: greyed out.  affordable: price in gold.  highlighted: reverse video.
     const bg = hi ? (can ? C.fg : C.dim) : null;
     const fg = hi ? C.bg : (can ? C.fg : C.dim);
@@ -1464,7 +1483,7 @@ function drawNow() {
     drawSpeak(ix, iy, iw, ih);
     scr.box(pw, py, side, ph, 'AMULETS');
     drawSide(pw + 2, iy, side - 4, ih);
-  } else if (state.tab === 'UPGRADE') drawUpgrade(ix, iy, iw, ih);
+  } else if (state.tab === 'BUY NAMES') drawUpgrade(ix, iy, iw, ih);
   else drawOffice(ix, iy, iw, ih);
 
   // tab bar
@@ -1473,11 +1492,11 @@ function drawNow() {
   let tx = 1;
   for (const t of state.tabs) {
     const label = ` ${t} `;
-    const active = t === state.tab || (t === 'UPGRADE' && state.tabBlink > 0 && state.blinkOn);
+    const active = t === state.tab || (t === 'BUY NAMES' && state.tabBlink > 0 && state.blinkOn);
     scr.text(tx, ty, label, active ? C.tabActFg : C.tabFg, active ? C.tabActBg : C.tabBg, active);
     tx += label.length + 1;
   }
-  const hint = state.tab === 'UPGRADE' ? '←→ tabs  ↑↓ select' : '←→ tabs';
+  const hint = state.tab === 'BUY NAMES' && selected() >= 0 ? '←→ tabs  ↑↓ select' : '←→ tabs';   // nothing to select, no promise of it
   scr.text(cols - hint.length - 1, ty, hint, C.tabFg, C.tabBg);
 
   if (modalVisible()) {
@@ -1553,7 +1572,7 @@ replenishAmulets();
 newWord();
 
 setInterval(() => {
-  state.blinkOn = !state.blinkOn;      // 1 Hz: the cursor, the notice's flash, the UPGRADE tab's nudge
+  state.blinkOn = !state.blinkOn;      // 1 Hz: the cursor, the notice's flash, the BUY NAMES tab's nudge
   if (state.tabBlink > 0) state.tabBlink--;
   draw();
 }, 500);
