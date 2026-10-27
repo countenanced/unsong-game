@@ -148,3 +148,25 @@ TOHU VA VOHU
     in-fiction way to say it (licensing fine print?).
     
    
+15. The office clock. You have to buy a clock for your office before
+    any realtime effects unlock, breaks included. That's just a game
+    conceit. I imagine it putting a red seven segment display clock in
+    the bottom right of the screen. I haven't decided yet how I want
+    time to work. Buying the clock is necessary but not sufficient for
+    unlocking breaks; I haven't thought the mechanism through fully
+    yet.
+16. Someone outside. Sometimes when you go out (possibly depending on
+    suspicion) there's someone there from another department whom you
+    don't recognize. The tone isn't ominous at all. But if you
+    foolishly say a copyrighted or otherwise holy word in the presence
+    of another person, you get copyright struck at minimum. Maybe a
+    dialogue box for them, maybe not: I like the emptiness of the
+    cigarette page, truly meditative and texturally interesting.
+17. Keeping the outdoor speech a secret. To keep people from
+    keysmashing and discovering that you can speak outdoors, put a
+    message under the cigarette, maybe in a box, maybe not: "Nice to
+    get away from the desk for a while. Press ESC to head in early."
+    Another version: a canned sequence of interior thoughts, one every
+    five seconds: "Nice to get away from the desk for a while." "Kind
+    of cold today." "Can't wait til I can go home." That sort of
+    thing. Make it feel like an intentional noninteractive movie.

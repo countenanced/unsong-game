@@ -952,8 +952,7 @@ const Break = (() => {
       if (name) { speak(now, name); st.hushUntil = now + B.cooldownMs; st.lastKey = 0; }   // the prompt goes covert again
       return true;
     }
-    if (e.key === 'Backspace') { st.typed = ''; st.lastKey = now; return true; }   // no unsaying a sound: the whole word is swallowed
-    if (e.key === 'Enter') { speak(now); st.lastKey = now - B.sendMs; return true; }   // as if the pause had come
+    if (e.key === 'Enter' || e.key === 'Backspace') { speak(now); st.lastKey = now - B.sendMs; return true; }   // as if the pause had come: no unsaying a sound
     return false;
   }
 
@@ -1536,10 +1535,14 @@ function handleKey(e) {
 const devBreaks = new URLSearchParams(location.search).has('breaks');   // dev: the break before it is earned (not saved)
 const breaksOpen = () => state.breaks || devBreaks;
 function clockOutKey(e) {
+  const smoked = Break.phase() === 'out';
   const r = Break.key(e, performance.now());
   if (r) e.preventDefault();
   if (r === 'light') state.litAt = performance.now();
-  if (r === 'back') state.tab = 'SPEAK';
+  if (r === 'back') {
+    state.tab = 'SPEAK';
+    if (smoked) clearBox();                  // back from a break, you have lost your place in the word
+  }
 }
 
 // ---------- drawing ----------

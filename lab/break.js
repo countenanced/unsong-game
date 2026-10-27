@@ -93,8 +93,7 @@ const Break = (() => {
       if (name) { speak(now, name); st.hushUntil = now + B.cooldownMs; st.lastKey = 0; }   // the prompt goes covert again
       return true;
     }
-    if (e.key === 'Backspace') { st.typed = ''; st.lastKey = now; return true; }   // no unsaying a sound: the whole word is swallowed
-    if (e.key === 'Enter') { speak(now); st.lastKey = now - B.sendMs; return true; }   // as if the pause had come
+    if (e.key === 'Enter' || e.key === 'Backspace') { speak(now); st.lastKey = now - B.sendMs; return true; }   // as if the pause had come: no unsaying a sound
     return false;
   }
 
