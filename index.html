@@ -89,6 +89,7 @@ const CFG = {
   wakingMatchHoldMs: 250,  // ...but under the waking word matches come fast, so the lit pause is shorter
   inputMax: 40,            // how far a stray typist can run past the end of the word
   sideCols: 38,            // width of the AMULETS side panel
+  activeRows: 6,           // height of the ACTIVE NAMES frame beneath it, borders included
   amuletsShown: 5,
   juice: 0.08,             // chance that a word is rigged to match an amulet (?juice=0 to disable)
   boxCols: 20,
@@ -1337,10 +1338,6 @@ function drawSpeak(x0, y0, w, h) {
   const mic = ' MIC: ON ';
   scr.text(x0, sy, mic, C.bright, C.bad, true);
   scr.text(x0 + mic.length + 2, sy, CFG.statusMsg, C.bright, C.statusBg);
-  if (state.charges.waking) {
-    const t = `WAKING: ${state.charges.waking} `;
-    scr.text(x0 + w - t.length, sy, t, C.money, C.statusBg, true);
-  }
   if (state.holding) {
     // a thinking pause: dots creep out after the box
     const dots = '.'.repeat(1 + (state.holdTicks % 3));
@@ -1348,6 +1345,19 @@ function drawSpeak(x0, y0, w, h) {
   }
 }
 
+// the bought names now in force, with the words of effect each has left
+function drawActive(x0, y0, w, h) {
+  const C = CFG.colors, head = 'CHARGES REMAINING';
+  scr.text(x0, y0, 'NAME', C.fg, null, true);
+  scr.text(x0 + w - head.length, y0, head, C.fg, null, true);
+  const live = UPGRADES.filter(u => (state.charges[u.id] || 0) > 0);
+  if (!live.length) scr.text(x0, y0 + 1, 'None.', C.dim);
+  live.slice(0, h - 1).forEach((u, i) => {
+    const n = String(state.charges[u.id]);
+    scr.text(x0, y0 + 1 + i, u.title.replace(/\s*©.*$/, '').toUpperCase(), C.contract, null, true);
+    scr.text(x0 + w - n.length, y0 + 1 + i, n, C.contract, null, true);
+  });
+}
 function drawSide(x0, y0, w, h) {
   const C = CFG.colors;
   scr.text(x0, y0, `$${(CFG.bonusCents / 100).toFixed(2)} BONUS WHEN YOUR WORD`, C.fg, null, true);
@@ -1485,8 +1495,13 @@ function drawNow() {
   const ix = px + 2, iy = py + 1, iw = pw - 4, ih = ph - 2;
   if (state.tab === 'SPEAK') {
     drawSpeak(ix, iy, iw, ih);
-    scr.box(pw, py, side, ph, 'AMULETS');
-    drawSide(pw + 2, iy, side - 4, ih);
+    // the side panel: AMULETS above, ACTIVE NAMES below, sharing a border
+    const ah = CFG.activeRows, top = ph - ah + 1;
+    scr.box(pw, py, side, top, 'AMULETS');
+    scr.box(pw, py + top - 1, side, ah, 'ACTIVE NAMES');
+    scr.put(pw, py + top - 1, '├', C.border); scr.put(pw + side - 1, py + top - 1, '┤', C.border);
+    drawSide(pw + 2, iy, side - 4, top - 2);
+    drawActive(pw + 2, py + top, side - 4, ah - 2);
   } else if (state.tab === 'BUY NAMES') drawUpgrade(ix, iy, iw, ih);
   else if (state.tab === 'OFFICE') drawOffice(ix, iy, iw, ih);
   else drawClockOut(ix, iy, iw, ih);
