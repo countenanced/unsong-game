@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>countenance — cigarette lab</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #000; height: 100%; overflow: hidden; }
+  html, body { margin: 0; padding: 0; background: #000; height: 100%; overflow: hidden; user-select: none; }   /* nothing for select-all to grab */
   canvas#screen {
     display: block; position: absolute;
     image-rendering: pixelated; image-rendering: crisp-edges;
@@ -58,6 +58,7 @@
   <label><input id="chrome" type="checkbox" checked> chrome</label>
   <label>tabs while lit <select id="lock"><option>hide</option><option>grey</option></select></label>
   <button id="again">step outside again</button>
+  <button id="morning">clock to 8 AM</button>
   <label>balance $<input id="cash" type="number" step="1" value="0" style="width:110px"></label>
   <label>seed <input id="seed" type="number" min="1" max="999" value="7"></label>
 </div>
@@ -722,6 +723,7 @@ const SECRET_NAMES = [
 </script>
 <script src="cigarette.js"></script>
 <script src="break.js"></script>
+<script src="clock.js"></script>
 <script>
 'use strict';
 // The lab: the CLOCK OUT tab with the break scene in it, and controls below.
@@ -762,10 +764,11 @@ function sync() {
 function frame(now) {
   const dt = (now - last) / 1000; last = now;
   sync();
-  if (playing) s = Math.min(P.duration, s + dt * parseFloat($('speed').value));
-  if (s >= P.duration) playing = false;
+  if (playing) s = Math.min(Break.endS(), s + dt * parseFloat($('speed').value));
+  Clock.tick(dt * parseFloat($('speed').value));            // (the clock is assumed bought, out here)
+  if (s >= Break.endS()) playing = false;
   $('play').textContent = playing ? 'pause' : 'play';
-  $('scrub').value = s / P.duration;
+  $('scrub').value = s / Break.endS();
   $('clock').textContent = `${s.toFixed(1)}s`;
 
   const C = CFG.colors, cols = scr.cols, rows = scr.rows;
@@ -787,8 +790,9 @@ function frame(now) {
         scr.text(tx, ty, label, active ? (grey ? '#303030' : C.tabActFg) : barFg, active ? (grey ? '#5a5a5a' : C.tabActBg) : barBg, active);
         tx += label.length + 1;
       }
-      if (!grey) scr.text(cols - 8, ty, '←→ tabs', C.tabFg, C.tabBg);
-    }
+      if (!grey) scr.text(cols - CFG.clock.cols - 8, ty, '←→ tabs', C.tabFg, C.tabBg);
+      Clock.place(scr, cols - CFG.clock.cols, rows - CFG.clock.rows);   // the corner, past the end of the tab bar
+    }                                                       // (it is on the desk: outside, with the tabs, it is gone)
   }
   if (tab === 'SPEAK') {
     scr.text(3, 3, '(lab) The SPEAK tab.  Any key to step outside again.', C.dim);
@@ -801,15 +805,17 @@ function frame(now) {
   }
   else Break.draw(scr, 2, 2, cols - 4, rows - 5, now, s);
   scr.render();
+  Clock.paint(scr);
   const holy = tab === 'SPEAK' ? [] : Break.holyCells;
   Radiance.set(holy, scr); Gravity.set(holy, scr); Levitate.set(holy, scr);
   requestAnimationFrame(frame);
 }
 
 function again() { Break.reset(); s = 0; playing = false; tab = 'CLOCK OUT'; }
-$('play').onclick = () => { if (s >= P.duration) s = 0; playing = !playing; };
+$('play').onclick = () => { if (s >= Break.endS()) s = 0; playing = !playing; };
 $('again').onclick = again;
-$('scrub').oninput = e => { s = e.target.value * P.duration; playing = false; };
+$('morning').onclick = () => Clock.reset();
+$('scrub').oninput = e => { s = e.target.value * Break.endS(); playing = false; };
 // let go of focus after every use, so the next keystroke goes to the scene
 for (const el of document.querySelectorAll('#bar button, #bar select, #bar input[type=checkbox], #bar input[type=range]'))
   el.addEventListener(el.tagName === 'BUTTON' ? 'click' : 'change', () => el.blur());
@@ -819,6 +825,7 @@ for (const el of document.querySelectorAll('#bar input[type=number]'))
 
 window.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' && e.target.type === 'number' || e.target.tagName === 'SELECT') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;   // the browser's own shortcuts pass straight through
   if (tab === 'SPEAK') { again(); e.preventDefault(); return; }
   const r = Break.key(e, performance.now());
   if (r) e.preventDefault();

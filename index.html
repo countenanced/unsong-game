@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>countenance</title>
 <style>
-  html, body { margin: 0; padding: 0; background: #000; height: 100%; overflow: hidden; }
+  html, body { margin: 0; padding: 0; background: #000; height: 100%; overflow: hidden; user-select: none; }   /* nothing for select-all to grab */
   canvas#screen {
     display: block;
     position: absolute;            /* sized and centred by Screen.resize() */
@@ -740,6 +740,9 @@ const Cigarette = (() => {
       drops.push({ from: P.len - acc - L, len: L, at: (acc + L) / paper * P.duration });
       acc += L;
     }
+    // burned to the filter: whatever ash still hangs on lets go
+    if (frac >= 1 && acc < paper) drops.push({ from: nFilter, len: paper - acc, at: P.duration });
+    if (frac >= 1) acc = paper;
     return { nFilter, frac, ember: P.len - burned, ashEnd: P.len - acc, drops, out: frac >= 1 };
   }
 
@@ -839,7 +842,10 @@ const Cigarette = (() => {
     return b;
   }
 
-  return { draw, burn, height: P => (P || CFG.cigarette).style === 'fat' ? 2 : 1 };
+  // seconds from lit until the last of the ash has fallen out of sight
+  const spent = (P = CFG.cigarette) => P.duration + P.fall;
+
+  return { draw, burn, spent, height: P => (P || CFG.cigarette).style === 'fat' ? 2 : 1 };
 })();
 
 // ---------- the break ----------
@@ -857,6 +863,7 @@ const Cigarette = (() => {
 //   Break.captive()            true from stepping out until GO BACK IN: every key is the break's
 //   Break.bare(now, s)         true while smoking: the tab bar is not drawn
 //   Break.reset()              back to the menu
+//   Break.endS()               s at which it ends: the last ash fallen, and a breath
 //   Break.hear = word => ...   the host's ear for names: given the letters so far, return
 //                              { text, fg, bold, holy, take() } if they end in a name, else null.
 //                              It is asked after every letter, so it must not act: take() does
@@ -877,13 +884,28 @@ CFG.breakScene = {
   fog: ['#9a9a9a', '#7a7a7a', '#5e5e5e', '#454545', '#303030', '#202020'],   // a spoken word's greys, in turn
   fogStepMs: 350,            // how long it holds each grey
   lingerMs: 1000,            // a name holds its colour this long before it fogs
-  cooldownMs: 4000,          // after a name, you are hushed this long: no caret, and nothing more can be said
+  cooldownMs: 3000,          // after a name, you are hushed this long: no caret, and nothing more can be said
   holyMs: 3000,              // ...and a holy one floats in its light this long, then settles into the glass
+  afterAshS: 1,              // once the last ash has fallen, this long before the ending dialogue
+  // while you smoke, a few thoughts drift by in a box where the dialogue was, one at a time
+  thoughts: [
+    'Nice to get away from the desk for a while.',
+    'Can\'t wait to go home.',
+  ],
+  thoughtLeadS: 4,           // seconds after lighting before the first one begins to fade in
+  thoughtSteps: 5,           // it fades in (and out) in this many discrete jumps of grey...
+  thoughtStepS: 0.5,         // ...each held this many seconds
+  thoughtHoldS: 4,           // seconds it lingers at full strength
+  thoughtGapS: 20,           // seconds of nothing between one fading out and the next fading in
+  thoughtCols: 50,           // the thought box's width, borders included
+  speechStopsThoughts: true, // a letter said out here puts the thought away at once, and the rest never come
+  escHint: '(Press ESC to go back inside early.)',
+  escColor: '#4a4a4a',       // faint grey
 };
 const Break = (() => {
   let st;
   function reset() {
-    st = { phase: 'menu', sel: 0, typed: '', lastKey: 0, spoken: [], hushUntil: 0 };
+    st = { phase: 'menu', sel: 0, typed: '', lastKey: 0, spoken: [], hushUntil: 0, spoke: false };
   }
   reset();
 
@@ -897,16 +919,29 @@ const Break = (() => {
 
   // at the filter the line closes, whatever is half-said goes out, and the ending comes up
   function burnOut(now, s) {
-    if (st.phase === 'smoking' && s >= CFG.cigarette.duration) { speak(now); st.phase = 'out'; st.sel = 0; }
+    if (st.phase === 'smoking' && s >= api.endS()) { speak(now); st.phase = 'out'; st.sel = 0; }
   }
 
   // a name keeps its own colour as it fogs, darkening in the same steps as the grey
   function fogged(wd, step) {
     const B = CFG.breakScene;
-    if (!wd.fg) return B.fog[step];
-    const k = (B.fog.length - step) / B.fog.length, n = parseInt(wd.fg.slice(1), 16);
+    return wd.fg ? dimmed(wd.fg, (B.fog.length - step) / B.fog.length) : B.fog[step];
+  }
+
+  // c's hex colour at strength k (0..1) over black
+  function dimmed(c, k) {
+    const n = parseInt(c.slice(1), 16);
     const ch = sh => Math.round((n >> sh & 255) * k).toString(16).padStart(2, '0');
     return `#${ch(16)}${ch(8)}${ch(0)}`;
+  }
+
+  // which thought is up s seconds after lighting, and how strongly: { text, k } or null
+  function thought(s) {
+    const B = CFG.breakScene, fade = B.thoughtSteps * B.thoughtStepS, span = 2 * fade + B.thoughtHoldS;
+    const t = s - B.thoughtLeadS, i = Math.floor(t / (span + B.thoughtGapS)), u = t - i * (span + B.thoughtGapS);
+    if (t < 0 || i >= B.thoughts.length || u >= span) return null;
+    const step = Math.min(B.thoughtSteps, Math.floor(u / B.thoughtStepS) + 1, Math.floor((span - u) / B.thoughtStepS) + 1);
+    return { text: B.thoughts[i], k: step / B.thoughtSteps };   // in jumps, never a smooth ramp
   }
 
   // the word goes out on its own once you have been quiet long enough
@@ -942,9 +977,11 @@ const Break = (() => {
       return true;
     }
     if (st.phase !== 'smoking') return false;
+    if (e.key === 'Escape') { reset(); return 'back'; }      // the cigarette, abandoned
     if (now < st.hushUntil) return true;                     // still getting your breath back
     if (/^[a-z]$/i.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
       st.lastKey = now;
+      st.spoke = true;                                        // ...and the thoughts are gone for good
       // a name goes out the moment its last consonant is said, and hushes you
       // (any vowels trailing it, as in TO-HU-VA-VO-HU, fall in the hush)
       if (st.typed.length < B.fieldCols - 1) st.typed += e.key.toUpperCase();
@@ -974,7 +1011,7 @@ const Break = (() => {
 
     const cx = x0 + Math.floor((w - P.len) / 2), cy = y0 + B.smokeRows;
     const below = cy + Cigarette.height(P);
-    const inputRow = y0 + h - 2;
+    const thoughtH = 5, inputRow = below + 2 + thoughtH + 1, hintRow = y0 + h - 2;
     Cigarette.draw(scr, cx, cy, st.phase === 'ask' ? null : s, now / 1000, inputRow - 1);
 
     // the dialogue, if one is up: placed now, drawn last, over everything
@@ -1014,6 +1051,18 @@ const Break = (() => {
     if (st.phase === 'smoking' && st.lastKey && since < B.sendMs + B.caretMs && since % 1000 < 500)
       scr.put(fx + st.typed.length, inputRow, ' ', C.bg, C.fg);   // the caret, blinking from the last key
 
+    // while smoking: a thought box where the dialogue sits, the covert line under it, and the way back in at the bottom
+    if (st.phase === 'smoking') {
+      const th = !(B.speechStopsThoughts && st.spoke) && thought(s);
+      if (th) {
+        const W = B.thoughtCols, x = x0 + Math.floor((w - W) / 2), y = below + 2;
+        scr.fill(x, y, W, thoughtH, ' ', C.fg, C.bg);
+        scr.box(x, y, W, thoughtH, null, dimmed(C.border, th.k));
+        scr.text(x + Math.floor((W - th.text.length) / 2), y + 2, th.text, dimmed(C.fg, th.k));
+      }
+      scr.text(x0 + Math.floor((w - B.escHint.length) / 2), hintRow, B.escHint, B.escColor);
+    }
+
     if (dlg) {
       scr.fill(dlg.x, dlg.y, dlg.W, dlg.H, ' ', C.fg, C.bg);
       scr.box(dlg.x, dlg.y, dlg.W, dlg.H);
@@ -1029,7 +1078,116 @@ const Break = (() => {
   }
 
   const api = { key, draw, reset, hear: null, holyCells: [], phase: () => st.phase,
+                endS: () => Cigarette.spent() + CFG.breakScene.afterAshS,
                 captive: () => st.phase !== 'menu', bare: (now, s) => { burnOut(now, s); return st.phase === 'smoking'; } };
+  return api;
+})();
+
+// ---------- the office clock ----------
+// A red seven-segment wall clock in the bottom right corner, at the end of the
+// tab bar, once you have bought one.  It keeps the Company's time, not the
+// wall's: the day starts at 8:00 AM and runs fast enough that one cigarette
+// break, lighting to the last ash, is ten minutes.  It stops while the page is
+// put away and picks up where it left off (state.clockT, saved with the game).
+//   Clock.tick(now)           advance it to now (performance clock); calls Clock.onHour on the hour
+//   Clock.place(scr, col, row) reserve its cells (blank, black) before scr.render()
+//   Clock.paint(scr)          draw the digits over those cells, after scr.render(); not placed this frame, not drawn
+CFG.clock = {
+  dayStart: 8 * 3600,        // seconds after midnight that the day begins
+  breakMinutes: 10,          // a whole cigarette break comes to this on the clock
+  wordsPerHour: 20,          // the words to say from the prompt before you have earned a break
+  cols: 7, rows: 1,          // the cells it takes, in the corner (it is painted, so any size will do)
+  saveEvery: 10,             // seconds (real) between saves while it runs
+  on:  '#a8382e',            // a lit segment: a muted red
+  off: '#170605',            // an unlit one, faintly there as on a real display
+  bg:  '#000000',
+};
+const Clock = (() => {
+  const K = CFG.clock;
+  let at = null, last = null, sinceSave = 0;
+  // clock seconds per real second
+  const rate = () => K.breakMinutes * 60 / Break.endS();
+
+  function tick(now) {
+    const dt = last == null ? 0 : Math.min(1, (now - last) / 1000);   // a long gap (the page put away) is not made up
+    last = now;
+    if (!state.clock || document.hidden || !dt) return;
+    const hour = Math.floor(state.clockT / 3600);
+    state.clockT = (state.clockT + dt * rate()) % 86400;
+    if (Math.floor(state.clockT / 3600) !== hour) api.onHour();
+    if ((sinceSave += dt) >= K.saveEvery) { sinceSave = 0; save(); }
+  }
+
+  function place(scr, col, row) {
+    at = { col, row };
+    scr.fill(col, row, K.cols, K.rows, ' ', K.bg, K.bg);
+  }
+
+  // which of a b c d e f g are lit, per digit
+  const SEGS = ['abcdef', 'bc', 'abdeg', 'abcdg', 'bcfg', 'acdfg', 'acdefg', 'abc', 'abcdefg', 'abcdfg'];
+
+  function digit(o, x, y, w, h, th, lit) {
+    const gap = th * 0.18, half = th / 2;
+    // a segment from (x1,y1) to (x2,y2), pointed at both ends
+    const seg = (x1, y1, x2, y2) => {
+      const horiz = y1 === y2;
+      o.beginPath();
+      if (horiz) {
+        x1 += gap; x2 -= gap;
+        o.moveTo(x1, y1); o.lineTo(x1 + half, y1 - half); o.lineTo(x2 - half, y1 - half);
+        o.lineTo(x2, y1); o.lineTo(x2 - half, y1 + half); o.lineTo(x1 + half, y1 + half);
+      } else {
+        y1 += gap; y2 -= gap;
+        o.moveTo(x1, y1); o.lineTo(x1 + half, y1 + half); o.lineTo(x1 + half, y2 - half);
+        o.lineTo(x1, y2); o.lineTo(x1 - half, y2 - half); o.lineTo(x1 - half, y1 + half);
+      }
+      o.closePath(); o.fill();
+    };
+    const L = x + half, R = x + w - half, T = y + half, M = y + h / 2, B = y + h - half;
+    const at = { a: [L, T, R, T], b: [R, T, R, M], c: [R, M, R, B], d: [L, B, R, B],
+                 e: [L, M, L, B], f: [L, T, L, M], g: [L, M, R, M] };
+    for (const s of 'abcdefg') {
+      o.fillStyle = lit && lit.includes(s) ? K.on : K.off;
+      seg(...at[s]);
+    }
+  }
+
+  function paint(scr) {
+    if (!at) return;
+    const o = scr.ctx, cw = scr.cw, ch = scr.ch;
+    const X = at.col * cw, Y = at.row * ch, W = K.cols * cw, H = K.rows * ch;
+    o.save();
+    o.beginPath(); o.rect(X, Y, W, H); o.clip();
+    o.fillStyle = K.bg; o.fillRect(X, Y, W, H);
+
+    const mins = Math.floor(state.clockT / 60), h24 = Math.floor(mins / 60), m = mins % 60;
+    const h12 = (h24 + 11) % 12 + 1, pm = h24 >= 12;
+    const dh = H * 0.72, dw = dh * 0.5, th = Math.max(2, dh * 0.13), sp = th * 1.4, colon = th * 2.4;
+    const amW = H * 0.42;                                      // room for AM/PM
+    const total = 4 * dw + 3 * sp + colon + sp + amW;
+    let x = X + (W - total) / 2;
+    const y = Y + (H - dh) / 2;
+    const digits = [h12 >= 10 ? SEGS[1] : null, SEGS[h12 % 10], SEGS[Math.floor(m / 10)], SEGS[m % 10]];
+    digits.forEach((lit, i) => {
+      digit(o, x, y, dw, dh, th, lit);
+      x += dw + sp;
+      if (i === 1) {                                           // the colon, steady
+        o.fillStyle = K.on;
+        const cx = x - sp / 2 + colon / 2 - th / 2;
+        o.fillRect(cx, y + dh * 0.3 - th / 2, th, th);
+        o.fillRect(cx, y + dh * 0.7 - th / 2, th, th);
+        x += colon;
+      }
+    });
+    o.font = `bold ${Math.max(7, Math.round(H * 0.3))}px ${CFG.fontFamily}`;
+    o.textAlign = 'left'; o.textBaseline = 'alphabetic';
+    o.fillStyle = pm ? K.off : K.on; o.fillText('AM', x, y + dh * 0.42);
+    o.fillStyle = pm ? K.on : K.off; o.fillText('PM', x, y + dh);
+    o.restore();
+    at = null;                                                 // placed afresh each frame, or it is put away
+  }
+
+  const api = { tick, place, paint, onHour: () => {} };
   return api;
 })();
 
@@ -1194,6 +1352,12 @@ const SECRET_NAMES = [
     effect() { if (state.cents < 0) earn(-state.cents); } },
 ];
 
+// things for the office, bought once
+const OFFICE_ITEMS = [
+  { id: 'clock', label: 'Buy a wall clock.', cost: 1000, owned: () => state.clock,
+    buy() { state.clock = true; state.clockT = CFG.clock.dayStart; state.wordsLeft = CFG.clock.wordsPerHour; } },
+];
+
 // ---------- the SPEAK tab ----------
 const state = {
   tab: 'SPEAK',
@@ -1207,7 +1371,10 @@ const state = {
   typed: [],               // every consonant key of the current attempt, right or wrong
   modal: null,             // a notice that seizes the screen until a key is pressed
   infractions: 0,          // the permanent record
-  breaks: false,           // whether CLOCK OUT lets you out yet (?breaks opens it for testing, without saving)
+  clock: false,            // a wall clock bought for the office: time passes, and breaks can be earned
+  clockT: 0,               // what it says, in seconds after midnight
+  wordsLeft: 0,            // words still to say from the prompt before a break; back to the full count every hour, and after each break
+  officeSel: 0,            // highlighted row on the OFFICE tab
   litAt: 0,                // when the cigarette was lit, on the performance clock (not saved: a reload puts it out)
   tabBlink: 0,             // half-blinks left on the BUY NAMES tab after money crosses a price
   intro: [],               // the welcome, pinned at the top
@@ -1349,6 +1516,7 @@ function speakSuccess() {
       replenishAmulets();
     }
     if (state.word.grants) redeem(state.word.grants);   // the bought word, now spoken
+    if (!state.word.free && state.clock && state.wordsLeft > 0) state.wordsLeft--;   // one more done before the break
     if (!state.word.free) for (const id of Object.keys(state.charges)) {
       if (--state.charges[id] <= 0) {
         delete state.charges[id];
@@ -1470,6 +1638,7 @@ function speakFail(k) {
 }
 
 function handleKey(e) {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;   // the browser's own shortcuts (refresh, tabs, back, zoom) pass straight through
   if (state.modal) {
     e.preventDefault();
     // "any key": something you would actually press, not arrows, modifiers or function keys
@@ -1504,6 +1673,18 @@ function handleKey(e) {
     }
     return;
   }
+  if (state.tab === 'OFFICE') {
+    const can = officeBuyable(), at = can.indexOf(officeSelected());
+    if (e.key === 'ArrowDown' && at >= 0) state.officeSel = can[Math.min(at + 1, can.length - 1)];
+    else if (e.key === 'ArrowUp' && at >= 0) state.officeSel = can[Math.max(at - 1, 0)];
+    else if (e.key === 'Enter' && at >= 0) {
+      const it = OFFICE_ITEMS[officeSelected()];
+      earn(-it.cost);
+      it.buy();
+      save();
+    }
+    return;
+  }
   if (state.tab === 'CLOCK OUT' && breaksOpen()) { clockOutKey(e); return; }
   if (state.tab !== 'SPEAK') return;
   if (['Backspace', 'Delete', 'Escape'].includes(e.key)) {
@@ -1533,12 +1714,16 @@ function handleKey(e) {
 }
 
 const devBreaks = new URLSearchParams(location.search).has('breaks');   // dev: the break before it is earned (not saved)
-const breaksOpen = () => state.breaks || devBreaks;
+// out the door once the clock is up and the hour's words are said; and, once out, until you are back in
+const breaksOpen = () => devBreaks || Break.captive() || state.clock && state.wordsLeft <= 0;
 function clockOutKey(e) {
-  const smoked = Break.phase() === 'out';
+  const smoked = ['smoking', 'out'].includes(Break.phase());
   const r = Break.key(e, performance.now());
   if (r) e.preventDefault();
-  if (r === 'light') state.litAt = performance.now();
+  if (r === 'light') {
+    state.litAt = performance.now();
+    if (state.clock) { state.wordsLeft = CFG.clock.wordsPerHour; save(); }   // the break is taken: the next one is earned afresh
+  }
   if (r === 'back') {
     state.tab = 'SPEAK';
     if (smoked) clearBox();                  // back from a break, you have lost your place in the word
@@ -1807,13 +1992,17 @@ function drawSide(x0, y0, w, h) {
 
 // only names you can afford can be selected; with none, nothing is
 function buyable() { return UPGRADES.map((u, i) => i).filter(i => state.cents >= UPGRADES[i].cost); }
-function selected() {
-  const can = buyable();
+function choose(can, sel) {
   if (!can.length) return -1;
-  if (can.includes(state.sel)) return state.sel;
-  const below = can.filter(i => i < state.sel);                 // money ran short: the nearest above it
+  if (can.includes(sel)) return sel;
+  const below = can.filter(i => i < sel);                       // money ran short: the nearest above it
   return below.length ? below[below.length - 1] : can[0];
 }
+function selected() { return choose(buyable(), state.sel); }
+// the office store works the same way, less whatever is already on the wall
+const officeForSale = () => OFFICE_ITEMS.map((it, i) => i).filter(i => !OFFICE_ITEMS[i].owned());
+function officeBuyable() { return officeForSale().filter(i => state.cents >= OFFICE_ITEMS[i].cost); }
+function officeSelected() { return choose(officeBuyable(), state.officeSel); }
 function drawUpgrade(x0, y0, w, h) {
   const C = CFG.colors;
   scr.text(x0 + 1, y0, 'Speech licenses valid for ONE USE ONLY per purchase.', C.fg);
@@ -1893,11 +2082,35 @@ function drawModal() {
 }
 
 function drawOffice(x0, y0, w, h) {
-  scr.text(x0 + 1, y0 + 1, 'Your office has no decorations.', CFG.colors.fg);
+  const C = CFG.colors, forSale = officeForSale();
+  scr.text(x0 + 1, y0 + 1, state.clock ? 'Your office has a wall clock.' : 'Your office has no decorations.', C.fg);
+  if (forSale.length && !officeBuyable().length) {
+    const msg = 'Insufficient funds.';
+    scr.text(x0 + Math.floor((w - msg.length) / 2), y0 + 3, msg, C.bright);
+  }
+  // as on BUY NAMES: too expensive, greyed out; affordable, price in gold; highlighted, reverse video
+  forSale.forEach((i, k) => {
+    const it = OFFICE_ITEMS[i], r = y0 + 4 + k;
+    const can = state.cents >= it.cost, hi = i === officeSelected();
+    const bg = hi ? (can ? C.fg : C.dim) : null;
+    const fg = hi ? C.bg : (can ? C.fg : C.dim);
+    if (hi) scr.fill(x0, r, w, 1, ' ', fg, bg);
+    const cost = `$${(it.cost / 100).toFixed(2)}`;
+    scr.text(x0 + 1, r, it.label, hi ? C.bg : (can ? C.bright : C.dim), bg, can);
+    scr.text(x0 + 47 - cost.length, r, cost, hi ? C.bg : (can ? C.money : C.dim), bg, can);
+  });
+  scr.text(x0 + 1, y0 + h - 1, fmtMoney(state.cents), C.money, null, true);
 }
 
 function drawClockOut(x0, y0, w, h) {
-  if (!breaksOpen()) { scr.text(x0 + 1, y0 + 1, "It's not time to take a break yet.", CFG.colors.fg); return; }
+  const C = CFG.colors;
+  if (!breaksOpen()) {
+    if (!state.clock) { scr.text(x0 + 1, y0 + 1, "It's not time to take a break yet.", C.fg); return; }
+    const mins = Math.ceil((3600 - state.clockT % 3600) / 60);   // to the hour
+    scr.text(x0 + 1, y0 + 1, `Just ${mins} minute${mins === 1 ? '' : 's'} left.`, C.fg);
+    scr.text(x0 + 1, y0 + 2, `I should do some words before I go. ${state.wordsLeft}`, C.fg);
+    return;
+  }
   const now = performance.now();
   Break.draw(scr, x0, y0, w, h, now, (now - state.litAt) / 1000);
   holyCells = Break.holyCells;
@@ -1917,6 +2130,7 @@ function drawNow() {
   scr.clear();
   holyCells = [];
   const cols = scr.cols, rows = scr.rows;
+  Clock.tick(performance.now());
 
   // smoking: the tab bar is gone
   const bare = state.tab === 'CLOCK OUT' && breaksOpen() && Break.bare(performance.now(), (performance.now() - state.litAt) / 1000);
@@ -1955,15 +2169,19 @@ function drawNow() {
     tx += label.length + 1;
   }
   const out = state.tab === 'CLOCK OUT' && breaksOpen();
-  const choosing = state.tab === 'BUY NAMES' && selected() >= 0 || out && Break.phase() === 'menu';
+  const choosing = state.tab === 'BUY NAMES' && selected() >= 0 || state.tab === 'OFFICE' && officeSelected() >= 0
+                || out && Break.phase() === 'menu';
   const hint = out && Break.captive() ? '' : choosing ? '←→ tabs  ↑↓ select' : '←→ tabs';   // nothing to select, no promise of it
-  scr.text(cols - hint.length - 1, ty, hint, C.tabFg, C.tabBg);
+  const clockCols = state.clock && !bare ? CFG.clock.cols : 0;   // the clock is on the wall: outside, with the tabs, it is gone
+  scr.text(cols - clockCols - hint.length - 1, ty, hint, C.tabFg, C.tabBg);
+  if (clockCols) Clock.place(scr, cols - clockCols, rows - CFG.clock.rows);
 
   if (modalVisible()) {
     if (!state.modal.applied) applyViolation(state.modal);
     drawModal();
   }
   scr.render();
+  Clock.paint(scr);
   Radiance.set(modalVisible() ? [] : holyCells, scr);   // the notice seizes the screen; the light waits
   Gravity.set(modalVisible() ? [] : holyCells, scr);    // and the cloth lies flat again
   Levitate.set(modalVisible() ? [] : holyCells, scr);   // and the word settles back into the glass
@@ -1975,7 +2193,8 @@ function save() {
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       cents: state.cents, amulets: state.amulets.map(a => a.heb), log: state.log.slice(-200),
-      stack: state.stack, charges: state.charges, infractions: state.infractions, breaks: state.breaks,
+      stack: state.stack, charges: state.charges, infractions: state.infractions,
+      clock: state.clock, clockT: Math.round(state.clockT), wordsLeft: state.wordsLeft,
       modal: state.modal ? { kind: state.modal.kind, id: state.modal.id, showAt: state.modal.showAt, applied: state.modal.applied } : null,
     }));
   } catch (e) { /* private window or storage disabled: play on without memory */ }
@@ -2001,7 +2220,9 @@ function load() {
       for (let k = 0; k < n; k++) state.stack.push(id);
     }
     state.infractions = d.infractions || 0;
-    state.breaks = !!d.breaks;
+    state.clock = !!d.clock;
+    state.clockT = d.clockT || CFG.clock.dayStart;
+    state.wordsLeft = d.wordsLeft ?? CFG.clock.wordsPerHour;
     state.modal = d.modal || null;
     return true;
   } catch (e) { return false; }
@@ -2022,6 +2243,8 @@ window.addEventListener('error', e => {
 
 state.intro = INTRO.map(l => '  ' + l);
 load();
+Clock.onHour = () => { state.wordsLeft = CFG.clock.wordsPerHour; save(); };   // a new hour, a new count
+addEventListener('pagehide', save);                  // the clock's last minutes, kept
 replenishAmulets();
 { // dev: ?demo=N pre-fills N spoken words so the scrolling can be inspected
   const n = parseInt(new URLSearchParams(location.search).get('demo') || '0', 10);

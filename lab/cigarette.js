@@ -60,6 +60,9 @@ const Cigarette = (() => {
       drops.push({ from: P.len - acc - L, len: L, at: (acc + L) / paper * P.duration });
       acc += L;
     }
+    // burned to the filter: whatever ash still hangs on lets go
+    if (frac >= 1 && acc < paper) drops.push({ from: nFilter, len: paper - acc, at: P.duration });
+    if (frac >= 1) acc = paper;
     return { nFilter, frac, ember: P.len - burned, ashEnd: P.len - acc, drops, out: frac >= 1 };
   }
 
@@ -159,5 +162,8 @@ const Cigarette = (() => {
     return b;
   }
 
-  return { draw, burn, height: P => (P || CFG.cigarette).style === 'fat' ? 2 : 1 };
+  // seconds from lit until the last of the ash has fallen out of sight
+  const spent = (P = CFG.cigarette) => P.duration + P.fall;
+
+  return { draw, burn, spent, height: P => (P || CFG.cigarette).style === 'fat' ? 2 : 1 };
 })();
