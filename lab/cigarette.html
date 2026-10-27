@@ -1,0 +1,833 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>countenance — cigarette lab</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; height: 100%; overflow: hidden; }
+  canvas#screen {
+    display: block; position: absolute;
+    image-rendering: pixelated; image-rendering: crisp-edges;
+  }
+  canvas#screen.smooth { image-rendering: auto; }
+  /* the terminal redrawn through a warp, laid exactly over it while a holy word is on screen */
+  canvas#gravity {
+    position: absolute; display: none; pointer-events: none;
+    image-rendering: pixelated; image-rendering: crisp-edges;
+  }
+  canvas#gravity.smooth { image-rendering: auto; }
+  /* the holy word itself, floating out of the glass: crisp, full resolution */
+  canvas#levitate {
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none;
+  }
+  /* light that is not part of the terminal: smooth, unbounded, over everything */
+  canvas#radiance {
+    position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+    pointer-events: none; mix-blend-mode: screen;
+  }
+  /* the lab's own controls, outside the terminal */
+  #bar {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 64px; box-sizing: border-box;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; padding: 6px 12px;
+    background: #111; border-top: 1px solid #333; color: #aaa;
+    font: 13px "Cascadia Mono", "Liberation Mono", "DejaVu Sans Mono", monospace;
+  }
+  #bar label { display: flex; align-items: center; gap: 6px; }
+  #bar input[type=range] { width: 140px; }
+  #bar #scrub { width: 260px; }
+  #bar input[type=number] { width: 52px; background: #000; color: #ddd; border: 1px solid #444; }
+  #bar select, #bar button { background: #000; color: #ddd; border: 1px solid #444; font: inherit; padding: 1px 6px; }
+  #bar .read { color: #ffd75f; min-width: 7ch; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<canvas id="gravity"></canvas>
+<canvas id="radiance"></canvas>
+<canvas id="levitate"></canvas>
+<div id="bar">
+  <button id="play">pause</button>
+  <label>burn <input id="scrub" type="range" min="0" max="1" step="0.001" value="0"></label>
+  <span class="read" id="clock"></span>
+  <label>speed <select id="speed"><option>0.5</option><option selected>1</option><option>2</option><option>4</option><option>10</option><option>30</option></select>×</label>
+  <label>style <select id="style"><option>slim</option><option>fat</option><option>ascii</option></select></label>
+  <label>length <input id="len" type="number" min="8" max="96" value="32"></label>
+  <label>secs <input id="duration" type="number" min="5" max="900" value="60"></label>
+  <label><input id="smoke" type="checkbox" checked> smoke</label>
+  <label><input id="chrome" type="checkbox" checked> chrome</label>
+  <label>tabs while lit <select id="lock"><option>hide</option><option>grey</option></select></label>
+  <button id="again">step outside again</button>
+  <label>balance $<input id="cash" type="number" step="1" value="0" style="width:110px"></label>
+  <label>seed <input id="seed" type="number" min="1" max="999" value="7"></label>
+</div>
+<script>
+'use strict';
+const LAB_BAR = 64;
+
+/* ---- copied from index.html: CFG (without its tuning blocks) and Screen.
+   Only the resize() height differs.  Re-copy if those change upstream. ---- */
+const CFG = {
+  fontFamily: '"Cascadia Mono", "Liberation Mono", "DejaVu Sans Mono", monospace',
+  fontPx: 20,              // native render size; bigger = sharper after scaling
+  lineHeight: 1.25,
+  cols: 104, rows: 30,      // fixed terminal size; scaled to fit the window
+  colors: {
+    bg:        '#000000',
+    fg:        '#c8c8c8',   // ordinary text
+    dim:       '#5a5a5a',   // typed / spent
+    bright:    '#ffffff',
+    primary:   '#ffd75f',   // the consonant you must type next
+    secondary: '#e4e4e4',   // consonants still to come
+    vowel:     '#8a8a8a',
+    border:    '#8a8a8a',
+    tabBg:     '#1c3f95',
+    tabFg:     '#ffffff',
+    tabActBg:  '#ffffff',
+    tabActFg:  '#1c3f95',
+    money:     '#ffd75f',
+    ok:        '#5faf5f',
+    bad:       '#d75f5f',
+    contract:  '#5f87d7',   // a bought word in the ledger: no pay, just a dash
+    ghost:     '#6a6a6a',
+    statusBg:  '#303030',   // the status bar under the input   // the grey consonants waiting to be overwritten
+  },
+  cents: 10,
+  bonusCents: 100,         // for matching an amulet's gematria
+  violationHoldMs: 1500,   // the machine thinks about what you said before the notice appears
+  holdMs: 1000,            // how long a finished word lingers before entering history
+  errBlankMs: 1000,        // after a mistake, silence this long blanks the box
+  hebCol: 10,              // width of the hebrew column on the left (letters hug its right edge)
+  gap: 2,                  // whitespace between columns
+  romCol: 19,              // fixed width of the romanization column in the history (longer is clipped)
+  valCol: 4,               // width of the gematria column (right-aligned numbers)
+  earnCol: 5,              // "$5.25"
+  amuHebCol: 5,            // the matched amulet, hebrew (right-aligned)
+  amuGlossCol: 10,         // the matched amulet, glossed
+  amuletCaps: true,        // romanized amulets in caps like the words, or lowercase
+  matchHoldMs: 5000,       // the think lasts this long on a match, with the amulet lit the whole time
+  wakingMatchHoldMs: 250,  // ...but under the waking word matches come fast, so the lit pause is shorter
+  inputMax: 40,            // how far a stray typist can run past the end of the word
+  sideCols: 38,            // width of the AMULETS side panel
+  activeRows: 6,           // height of the ACTIVE NAMES frame beneath it, borders included
+  lowCharges: 5,           // at or below this many charges a name's row turns red
+  expiredMs: 0,            // a spent name lingers this long, white on red, before it is struck off (0: no flash)
+  amuletsShown: 5,
+  juice: 0.08,             // chance that a word is rigged to match an amulet (?juice=0 to disable)
+};
+
+// ---------- the screen (cell grid) ----------
+class Screen {
+  constructor() {
+    this.view = document.getElementById('screen');
+    this.ctx = this.view.getContext('2d');
+    const q = new URLSearchParams(location.search);
+    this.smooth = q.has('smooth');
+    if (q.get('font')) CFG.fontPx = parseInt(q.get('font'), 10);   // dev: ?font=28
+    if (q.get('cols')) CFG.cols = parseInt(q.get('cols'), 10);     // dev: ?cols=80&rows=24
+    if (q.get('rows')) CFG.rows = parseInt(q.get('rows'), 10);
+    if (q.get('juice') != null) CFG.juice = parseFloat(q.get('juice'));
+    this.resize();
+  }
+  resize() {
+    const W = window.innerWidth, H = window.innerHeight - LAB_BAR;   // (lab: leave room for the controls)
+    this.ctx.font = `${CFG.fontPx}px ${CFG.fontFamily}`;
+    this.cw = Math.round(this.ctx.measureText('M').width);
+    this.ch = Math.round(CFG.fontPx * CFG.lineHeight);
+    this.cols = CFG.cols; this.rows = CFG.rows;
+    // the canvas holds the grid at native resolution; CSS stretches it to fit
+    // the window (letterboxed), and the compositor does the nearest-neighbour
+    // upscale for free.  that uneven stretch is the aliasing we want.
+    this.view.width = this.cols * this.cw;
+    this.view.height = this.rows * this.ch;
+    const sc = Math.min(W / this.view.width, H / this.view.height);
+    const dw = Math.round(this.view.width * sc), dh = Math.round(this.view.height * sc);
+    this.view.style.width = dw + 'px'; this.view.style.height = dh + 'px';
+    this.view.style.left = Math.floor((W - dw) / 2) + 'px';
+    this.view.style.top = Math.floor((H - dh) / 2) + 'px';
+    this.cells = new Array(this.cols * this.rows);
+    this.shown = new Array(this.cols * this.rows);   // what is currently painted
+    this.clear();
+    this.ctx.fillStyle = CFG.colors.bg; this.ctx.fillRect(0, 0, this.view.width, this.view.height);
+    for (let i = 0; i < this.shown.length; i++) this.shown[i] = null;
+  }
+  clear() {
+    for (let i = 0; i < this.cells.length; i++) this.cells[i] = null;
+  }
+  // put a single character at (col,row)
+  put(col, row, ch, fg = CFG.colors.fg, bg = null, bold = false) {
+    if (col < 0 || row < 0 || col >= this.cols || row >= this.rows) return;
+    this.cells[row * this.cols + col] = { ch, fg, bg, bold };
+  }
+  text(col, row, str, fg, bg, bold) {
+    str = str == null ? '' : String(str);
+    for (let i = 0; i < str.length; i++) this.put(col + i, row, str[i], fg, bg, bold);
+  }
+  fill(col, row, w, h, ch, fg, bg) {
+    for (let r = row; r < row + h; r++) for (let c = col; c < col + w; c++) this.put(c, r, ch, fg, bg);
+  }
+  box(col, row, w, h, title, fg = CFG.colors.border) {
+    this.put(col, row, '┌', fg); this.put(col + w - 1, row, '┐', fg);
+    this.put(col, row + h - 1, '└', fg); this.put(col + w - 1, row + h - 1, '┘', fg);
+    for (let c = col + 1; c < col + w - 1; c++) { this.put(c, row, '─', fg); this.put(c, row + h - 1, '─', fg); }
+    for (let r = row + 1; r < row + h - 1; r++) { this.put(col, r, '│', fg); this.put(col + w - 1, r, '│', fg); }
+    if (title) {
+      const t = `┤ ${title} ├`;
+      this.text(col + 2, row, t, fg);
+      this.text(col + 4, row, title, CFG.colors.bright, null, true);
+    }
+  }
+  static same(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return (!a || (a.ch === ' ' || !a.ch) && !a.bg) && (!b || (b.ch === ' ' || !b.ch) && !b.bg);
+    return a.ch === b.ch && a.fg === b.fg && a.bg === b.bg && !!a.bold === !!b.bold;
+  }
+  render() {
+    // repaint only the cells that differ from what is on screen, like a
+    // terminal does.  the font is set only when it changes between cells.
+    const o = this.ctx, n = this.cells.length;
+    o.textBaseline = 'middle';
+    o.textAlign = 'center';
+    let font = null, fg = null;
+    for (let i = 0; i < n; i++) {
+      const cell = this.cells[i], prev = this.shown[i];
+      if (Screen.same(cell, prev)) continue;
+      const c = i % this.cols, r = (i / this.cols) | 0;
+      const x = c * this.cw, y = r * this.ch;
+      o.fillStyle = (cell && cell.bg) || CFG.colors.bg;
+      o.fillRect(x, y, this.cw, this.ch);
+      fg = null;                                   // fillStyle is now the background colour
+      if (cell && cell.ch && cell.ch !== ' ') {
+        const f = cell.bold ? 'bold' : 'normal';
+        if (f !== font) { o.font = `${f} ${CFG.fontPx}px ${CFG.fontFamily}`; font = f; }
+        if (cell.fg !== fg) { o.fillStyle = cell.fg; fg = cell.fg; }
+        o.fillText(cell.ch, x + this.cw / 2, y + this.ch / 2 + 1);
+      }
+      this.shown[i] = cell;
+    }
+    this.view.classList.toggle('smooth', this.smooth);
+    this.version = (this.version || 0) + 1;      // for anything that copies the screen (the gravity)
+  }
+}
+// ---------- the holy word: shared ----------
+// Three layers dress a holy word, each its own module: GRAVITY creases the
+// screen around it (WebGL, under everything), RADIANCE glows about it, and
+// LEVITATE draws the word itself floating out of the glass.  The terminal's own
+// copy stays exactly where an ordinary word would be.  They share one clock and
+// one hover, so the light and the creases rise and fall with the floating word.
+// After each paint the ledger hands every layer the holy rows, in cells:
+//   { col, row, w, h, seed, glyphs: [{col, row, ch}] }
+CFG.levitate = {
+  scale: 1.08,               // the floating word is this much larger than the text
+  amp: 0.088,                // how far it bobs, in line heights
+  period: 11,                // seconds for one slow rise and fall
+  wavelength: 10,            // the rise and fall travels along the word like a flag; crest to crest, in line heights
+  slice: 2,                  // width of the strips the word is cut into to ripple, in screen pixels
+  glow: 0.55,                // blur of its glow, in line heights
+  glowColor: 'rgba(255, 246, 226, 0.95)',
+  color: '#ffffff',
+  restColor: null,           // the terminal's own copy while the word floats: a colour, or null to hide it
+};
+const Holy = {
+  t0: performance.now(),
+  time: now => (now - Holy.t0) / 1000,
+  // how far above its resting place the word floats now, in line heights (up is negative),
+  // at u line heights from the left of the window: a wave travelling rightward along the word
+  lift: (t, u = 0) => -CFG.levitate.amp * (0.5 - 0.5 * Math.cos(2 * Math.PI * (t / CFG.levitate.period - u / CFG.levitate.wavelength))),
+  rng(seed) {
+    return () => { seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+      let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296; };
+  },
+  // cells to the pixels of a canvas laid over the whole window at k canvas px per window px
+  toWindow(cellRects, screen, k) {
+    const b = screen.view.getBoundingClientRect();
+    const sx = b.width / screen.view.width * k, sy = b.height / screen.view.height * k;
+    const px = col => b.left * k + col * screen.cw * sx, py = row => b.top * k + row * screen.ch * sy;
+    return cellRects.map(c => ({
+      x: px(c.col), y: py(c.row), w: c.w * screen.cw * sx, h: c.h * screen.ch * sy, cell: screen.ch * sy,
+      font: CFG.fontPx * sy, seed: c.seed || 1,
+      glyphs: (c.glyphs || []).map(g => ({ x: px(g.col + 0.5), y: py(g.row + 0.5), ch: g.ch })),
+    }));
+  },
+  // a source moved by the current hover, each letter by the wave where it stands
+  lifted(src, t) {
+    const dy = Holy.lift(t, (src.x + src.w / 2) / src.cell) * src.cell;
+    return { ...src, y: src.y + dy, glyphs: src.glyphs.map(g => ({ ...g, y: g.y + Holy.lift(t, g.x / src.cell) * src.cell })) };
+  },
+};
+
+// ---------- radiance ----------
+// Light that does not belong to the terminal, on its own full-window canvas
+// and its own clock, so it flows between paints and spills past the row and
+// the screen.  It sleeps when nothing holy is visible.
+//
+// An effect is a function (ctx, src, t, P, rng) that draws one source:
+//   src: { x, y, w, h, cell, glyphs }   the row's text, in canvas pixels, already
+//        lifted by the hover; cell = one line's height; glyphs = [{x, y}] letter centres
+//   t:   seconds on the shared clock
+//   P:   CFG.radiance.<effect name>, for tuning
+//   rng: a seeded random generator, the same every frame for the same source
+// Choose with ?rays=<name> (or ?rays=off); tune in CFG.radiance.
+CFG.radiance = {
+  effect: 'aura',
+  resolution: 0.5,           // canvas pixels per window pixel; light is soft, so half is plenty
+  burst:  { rays: 44, reach: 12, width: 0.05, sway: 0.12, speed: 0.25, flicker: 1.3,
+            alpha: 0.45, bloom: 0.55, color: [255, 244, 214] },
+  shafts: { beams: 9, slant: 0.35, width: 2.4, drift: 0.08, alpha: 0.22, bloom: 0.45, color: [255, 246, 220] },
+  // aura: every letter breathes a soft blob; larger wisps wander off the letters,
+  // rise, and fade.  overlapping light adds up, so the blobs merge and part.
+  aura:   { core: 1.4, coreAlpha: 0.18, wisps: 22, wispSize: [0.9, 2.6], wander: 0.9, rise: 1.0,
+            life: [4, 9], wispAlpha: 0.09, color: [255, 246, 226], tint: [200, 215, 255], tintMix: 0.35 },
+  halo:   { size: 3, breathe: 0.6, alpha: 0.6, color: [255, 248, 230] },
+};
+const Radiance = (() => {
+  const cv = document.getElementById('radiance'), ctx = cv.getContext('2d');
+  const q = new URLSearchParams(location.search).get('rays');
+  let sources = [], raf = 0, painted = false;
+  const effects = {};
+  const rgba = (c, a) => `rgba(${c[0]},${c[1]},${c[2]},${Math.max(0, Math.min(1, a))})`;
+
+  function resize() {
+    const k = CFG.radiance.resolution;
+    cv.width = Math.ceil(window.innerWidth * k); cv.height = Math.ceil(window.innerHeight * k);
+    painted = true;                                       // resizing clears it; make sure we repaint
+    wake();
+  }
+  function set(cellRects, screen) {
+    sources = q === 'off' ? [] : Holy.toWindow(cellRects, screen, CFG.radiance.resolution);
+    wake();
+  }
+  function wake() { if (!raf && (sources.length || painted)) raf = requestAnimationFrame(frame); }
+  function frame(now) {
+    raf = 0;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    painted = false;
+    if (!sources.length) return;                          // nothing holy on screen: sleep
+    const name = q && effects[q] ? q : CFG.radiance.effect;
+    const fx = effects[name], P = CFG.radiance[name] || {};
+    const t = Holy.time(now);
+    ctx.globalCompositeOperation = 'lighter';
+    for (const src of sources) { ctx.save(); fx(ctx, Holy.lifted(src, t), t, P, Holy.rng(src.seed)); ctx.restore(); }
+    painted = true;
+    raf = requestAnimationFrame(frame);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+  return { effects, set, resize, rgba };
+})();
+
+// ---------- levitate ----------
+// The holy word itself, a little larger than the text and glowing, floating
+// above its resting place and bobbing slowly.  ?hover=off hides it.
+const Levitate = (() => {
+  // the word is painted once, at rest, into a sprite; each frame the sprite is
+  // resampled at a fractional offset, so the bob glides between pixels
+  // instead of snapping to them (text and layer transforms both snap)
+  const cv = document.getElementById('levitate'), ctx = cv.getContext('2d');
+  const off = new URLSearchParams(location.search).get('hover') === 'off';
+  let sources = [], raf = 0, k = 1, key = '', sprites = [], dirty = [];
+  function resize() {
+    k = window.devicePixelRatio || 1;
+    cv.width = Math.ceil(window.innerWidth * k); cv.height = Math.ceil(window.innerHeight * k);
+    key = ''; dirty = []; build(); wake();
+  }
+  function set(cellRects, screen) {
+    sources = off ? [] : Holy.toWindow(cellRects, screen, k).filter(s => s.glyphs.length);
+    build(); wake();
+  }
+  function build() {
+    const nk = JSON.stringify([cv.width, sources.map(s => [s.font, s.glyphs])]);
+    if (nk === key) return;
+    key = nk;
+    const L = CFG.levitate;
+    sprites = sources.map(src => {
+      // grow about the word's own centre
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const g of src.glyphs) { x0 = Math.min(x0, g.x); x1 = Math.max(x1, g.x); y0 = Math.min(y0, g.y); y1 = Math.max(y1, g.y); }
+      const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+      const pad = Math.ceil(src.cell * (1 + L.glow * 2));
+      const ox = Math.floor(cx - (cx - x0) * L.scale - pad), oy = Math.floor(cy - (cy - y0) * L.scale - pad);
+      const sp = document.createElement('canvas');
+      sp.width = Math.ceil((x1 - x0) * L.scale + pad * 2 + 2); sp.height = Math.ceil((y1 - y0) * L.scale + pad * 2 + 2);
+      const c = sp.getContext('2d');
+      c.font = `bold ${src.font * L.scale}px ${CFG.fontFamily}`;
+      c.textAlign = 'center'; c.textBaseline = 'middle';
+      c.fillStyle = L.color;
+      for (const pass of [L.glow * src.cell, 0]) {        // the glow, then the letters crisp on top
+        c.shadowBlur = pass; c.shadowColor = pass ? L.glowColor : 'transparent';
+        for (const g of src.glyphs)
+          c.fillText(g.ch, cx + (g.x - cx) * L.scale - ox, cy + (g.y - cy) * L.scale + src.cell * 0.04 - oy);
+      }
+      return { sp, ox, oy, cell: src.cell };
+    });
+  }
+  function wake() { if (!raf && (sprites.length || dirty.length)) raf = requestAnimationFrame(frame); }
+  function frame(now) {
+    raf = 0;
+    for (const d of dirty) ctx.clearRect(d[0], d[1], d[2], d[3]);
+    dirty = [];
+    if (!sprites.length) return;
+    ctx.imageSmoothingEnabled = true; ctx.imageSmoothingQuality = 'high';
+    const t = Holy.time(now), amp = Math.ceil(CFG.levitate.amp * 1.01 * (sprites[0] ? sprites[0].cell : 0)) + 2;
+    const sw = Math.max(1, Math.round(CFG.levitate.slice * k));
+    for (const s of sprites) {
+      // cut into thin strips, each lifted by the wave at its own place: fractional,
+      // so resampled rather than snapped
+      for (let x = 0; x < s.sp.width; x += sw) {
+        const w = Math.min(sw, s.sp.width - x);
+        const y = s.oy + Holy.lift(t, (s.ox + x + w / 2) / s.cell) * s.cell;
+        ctx.drawImage(s.sp, x, 0, w, s.sp.height, s.ox + x, y, w, s.sp.height);
+      }
+      dirty.push([s.ox - 2, s.oy - amp, s.sp.width + 4, s.sp.height + amp + 2]);
+    }
+    raf = requestAnimationFrame(frame);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+  return { set, floating: !off };
+})();
+
+// a soft glow hugging the text; shared by the effects below
+function radianceBloom(ctx, src, t, size, alpha, color) {
+  const cx = src.x + src.w / 2, cy = src.y + src.h / 2;
+  const rx = src.w / 2 + src.cell * size, ry = src.h / 2 + src.cell * size;
+  ctx.save();
+  ctx.translate(cx, cy); ctx.scale(1, ry / rx);
+  const g = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+  g.addColorStop(0, Radiance.rgba(color, alpha));
+  g.addColorStop(0.45, Radiance.rgba(color, alpha * 0.35));
+  g.addColorStop(1, Radiance.rgba(color, 0));
+  ctx.fillStyle = g;
+  ctx.fillRect(-rx, -rx, rx * 2, rx * 2);
+  ctx.restore();
+}
+
+// burst: thin rays streaming out from all along the word, swaying and flickering
+Radiance.effects.burst = (ctx, src, t, P, rng) => {
+  const cy = src.y + src.h / 2;
+  for (let i = 0; i < P.rays; i++) {
+    const ox = src.x + rng() * src.w, oy = cy + (rng() - 0.5) * src.h * 0.6;
+    const base = rng() * Math.PI * 2, ph = rng() * 100, sp = 0.5 + rng();
+    const ang = base + Math.sin(t * P.speed * sp + ph) * P.sway;
+    const len = src.cell * P.reach * (0.45 + 0.55 * (0.5 + 0.5 * Math.sin(t * P.flicker * sp * 0.7 + ph * 1.7)))
+              * (0.5 + rng());
+    const a = P.alpha * (0.35 + 0.65 * Math.pow(0.5 + 0.5 * Math.sin(t * P.flicker * sp + ph), 2));
+    const half = P.width * (0.5 + rng());               // angular half-width, radians
+    const ex = ox + Math.cos(ang) * len, ey = oy + Math.sin(ang) * len;
+    const g = ctx.createLinearGradient(ox, oy, ex, ey);
+    g.addColorStop(0, Radiance.rgba(P.color, a));
+    g.addColorStop(0.3, Radiance.rgba(P.color, a * 0.5));
+    g.addColorStop(1, Radiance.rgba(P.color, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(ox, oy);
+    ctx.lineTo(ox + Math.cos(ang - half) * len, oy + Math.sin(ang - half) * len);
+    ctx.lineTo(ox + Math.cos(ang + half) * len, oy + Math.sin(ang + half) * len);
+    ctx.closePath(); ctx.fill();
+  }
+  radianceBloom(ctx, src, t, 2 + 0.4 * Math.sin(t * 0.9), P.bloom * (0.85 + 0.15 * Math.sin(t * 1.3)), P.color);
+};
+
+// shafts: slanting beams falling from above the window onto the word
+Radiance.effects.shafts = (ctx, src, t, P, rng) => {
+  const top = -src.cell * 4, bottom = src.y + src.h + src.cell * 2;
+  for (let i = 0; i < P.beams; i++) {
+    const u = rng(), ph = rng() * 100, wv = P.width * src.cell * (0.4 + rng());
+    const fx = src.x + (u + Math.sin(t * P.drift * (0.5 + rng()) + ph) * 0.15) * src.w;
+    const sx = fx - (bottom - top) * P.slant;
+    const a = P.alpha * (0.4 + 0.6 * (0.5 + 0.5 * Math.sin(t * 0.7 + ph)));
+    const g = ctx.createLinearGradient(0, top, 0, bottom);
+    g.addColorStop(0, Radiance.rgba(P.color, 0));
+    g.addColorStop(0.75, Radiance.rgba(P.color, a * 0.6));
+    g.addColorStop(1, Radiance.rgba(P.color, a));
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(sx - wv * 1.6, top); ctx.lineTo(sx + wv * 1.6, top);
+    ctx.lineTo(fx + wv * 0.5, bottom); ctx.lineTo(fx - wv * 0.5, bottom);
+    ctx.closePath(); ctx.fill();
+  }
+  radianceBloom(ctx, src, t, 2, P.bloom, P.color);
+};
+
+// aura: a diaphanous, blobby glow rising off the letters themselves
+function radianceBlob(ctx, x, y, rad, a, color) {
+  const g = ctx.createRadialGradient(x, y, 0, x, y, rad);
+  g.addColorStop(0, Radiance.rgba(color, a));
+  g.addColorStop(0.4, Radiance.rgba(color, a * 0.55));
+  g.addColorStop(1, Radiance.rgba(color, 0));
+  ctx.fillStyle = g;
+  ctx.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+}
+Radiance.effects.aura = (ctx, src, t, P, rng) => {
+  const gl = src.glyphs.length ? src.glyphs : [{ x: src.x + src.w / 2, y: src.y + src.h / 2 }];
+  const mix = (u) => P.color.map((c, i) => Math.round(c + (P.tint[i] - c) * u));
+  // each letter's own breath
+  for (const g of gl) {
+    const ph = rng() * 100;
+    const br = 0.5 + 0.5 * Math.sin(t * (0.6 + rng() * 0.6) + ph);
+    const wob = src.cell * 0.15;
+    radianceBlob(ctx, g.x + Math.sin(t * 0.7 + ph) * wob, g.y + Math.cos(t * 0.9 + ph) * wob,
+                 src.cell * P.core * (0.85 + 0.3 * br), P.coreAlpha * (0.6 + 0.4 * br), mix(rng() * P.tintMix));
+  }
+  // wisps: born on a letter, drifting up and outward, swelling as they fade
+  for (let i = 0; i < P.wisps; i++) {
+    const g = gl[Math.floor(rng() * gl.length)];
+    const life = P.life[0] + rng() * (P.life[1] - P.life[0]);
+    const off = rng() * life, ph = rng() * 100;
+    const k = ((t + off) % life) / life;                 // 0 → 1 over this wisp's life
+    const born = Math.floor((t + off) / life);           // each new life leaves from a different letter
+    const h = gl[(gl.indexOf(g) + born * 7) % gl.length];
+    const dx = Math.sin(t * 0.35 + ph) * P.wander * src.cell + Math.sin(ph) * k * P.wander * src.cell;
+    const dy = -k * P.rise * src.cell + Math.cos(t * 0.5 + ph) * 0.3 * src.cell;
+    const rad = src.cell * (P.wispSize[0] + (P.wispSize[1] - P.wispSize[0]) * (0.3 + 0.7 * k)) * (0.7 + 0.6 * rng());
+    radianceBlob(ctx, h.x + dx, h.y + dy, rad, P.wispAlpha * Math.sin(Math.PI * k), mix(rng() * P.tintMix));
+  }
+};
+
+// halo: only the glow, breathing; the plainest baseline for comparison
+Radiance.effects.halo = (ctx, src, t, P) =>
+  radianceBloom(ctx, src, t, P.size * (1 + 0.15 * Math.sin(t * P.breathe * 2)), P.alpha, P.color);
+
+// ---------- gravity ----------
+// The holy word is heavy, and the screen is a taut blanket under it.  While
+// one is visible, a WebGL canvas laid exactly over the terminal redraws it
+// through a displacement field that moves with the hovering word.
+//   creases: irregular folds radiating from the word, tight at its edge and
+//            easing flat with distance; material gathers into each fold, and
+//            each fold catches a little light.
+//   pucker:  the earlier version: every letter a dent, the cloth sinking in.
+//   ripple:  the floating word's own wave passes into what is around it,
+//            weakening with distance from the word.
+// The cells the word occupies (resting or lifted) are left flat, so the
+// terminal's own copy stays exactly where it is.
+// ?gravity=ripple|creases|pucker|off overrides CFG.gravity.mode; tune in CFG.gravity.
+CFG.gravity = {
+  mode: 'ripple',            // 'ripple', 'creases', 'pucker', or 'off'
+  // ripple
+  rippleReach: 5,            // distance from the word at which the wave has faded to a third, in line heights
+  rippleStrength: 2.5,       // 1 = the surroundings move exactly as much as the word beside them; more, and they swing wider
+  // creases
+  creases: 13,               // how many folds
+  amp: 1.0,                  // how much cloth each fold gathers, in line heights (varies per fold)
+  width: 0.14,               // angular width of a fold, radians (varies per fold)
+  reach: 4,                  // how far a fold runs before it eases flat, in line heights (varies)
+  drift: 0.05,               // slow wandering of the folds, radians
+  pull: 0.3,                 // the cloth drawn in toward the word overall, in line heights
+  pullReach: 2,
+  margin: 0.6,               // the folds start this far from the word's cells, in line heights
+  shade: 0.015,              // light caught along each fold
+  // pucker
+  radius: 2.2,               // reach of each letter's dent, in line heights
+  strength: 0.9,             // how hard the cloth is pulled (about 0.4 x radius at 1.0)
+  breathe: 0.08,             // slow swell of the pull, as a fraction
+  breatheHz: 0.15,
+};
+const Gravity = (() => {
+  const MAX = 64, MAXC = 24;
+  const cv = document.getElementById('gravity');
+  const q = new URLSearchParams(location.search).get('gravity');
+  const gl = cv.getContext('webgl', { alpha: false, antialias: false, preserveDrawingBuffer: false });
+  if (!gl || (q ? q === 'off' : CFG.gravity.mode === 'off')) return { set() {} };
+  const sh = (type, src) => { const o = gl.createShader(type); gl.shaderSource(o, src); gl.compileShader(o);
+    if (!gl.getShaderParameter(o, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(o)); return o; };
+  const prog = gl.createProgram();
+  gl.attachShader(prog, sh(gl.VERTEX_SHADER, `
+    attribute vec2 a; varying vec2 uv;
+    void main() { uv = a * 0.5 + 0.5; gl_Position = vec4(a, 0.0, 1.0); }`));
+  gl.attachShader(prog, sh(gl.FRAGMENT_SHADER, `
+    precision highp float;
+    uniform sampler2D tex; uniform vec2 size; uniform vec4 box; uniform int mode;
+    uniform vec2 pts[${MAX}]; uniform int n; uniform float R, S;          // pucker
+    uniform vec4 rest, word, cr[${MAXC}]; uniform int nc;                 // creases
+    uniform float L, pull, pullReach, margin, shade;
+    uniform float wamp, wphase, wlen, uoff, wreach, wstr;              // ripple
+    varying vec2 uv;
+    const float PI = 3.14159265, TAU = 6.2831853;
+    float sdBox(vec2 p, vec2 b) { vec2 d = abs(p) - b; return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0); }
+    void main() {
+      vec2 p = vec2(uv.x, 1.0 - uv.y) * size;          // canvas pixels, y down
+      if (p.x < box.x || p.y < box.y || p.x > box.z || p.y > box.w) {   // beyond any pull: flat
+        gl_FragColor = texture2D(tex, p / size); return;
+      }
+      vec2 q = p; float light = 0.0;
+      if (mode == 2) {
+        vec2 rc = (rest.xy + rest.zw) * 0.5, rb = (rest.zw - rest.xy) * 0.5;
+        float d = max(sdBox(p - rc, rb), 0.0) / L;     // line heights out from the word
+        float u = uoff + p.x / L;                      // the same place along the wave as the word uses
+        float lift = -wamp * (0.5 - 0.5 * cos(TAU * (wphase - u / wlen)));
+        q = p - vec2(0.0, lift * L * wstr * exp(-d / wreach));
+      } else if (mode == 0) {
+        float sum = 0.0; vec2 acc = vec2(0.0);
+        for (int i = 0; i < ${MAX}; i++) {
+          if (i >= n) break;
+          vec2 d = p - pts[i];
+          float g = exp(-dot(d, d) / (R * R));
+          sum += g; acc += d * g;
+        }
+        q = p + S * exp(-sum) * acc;
+      } else {
+        vec2 c = (word.xy + word.zw) * 0.5, hb = (word.zw - word.xy) * 0.5;
+        vec2 rc = (rest.xy + rest.zw) * 0.5, rb = (rest.zw - rest.xy) * 0.5;
+        float d = max(sdBox(p - c, hb), 0.0) / L;      // line heights out from the lifted word
+        float m = smoothstep(0.0, margin, min(d, max(sdBox(p - rc, rb), 0.0) / L));
+        vec2 sc = hb + vec2(L);                        // stretch the angles round a wide word
+        vec2 e = (p - c) / sc;
+        float th = atan(e.y, e.x);
+        vec2 nrm = normalize(e / sc + vec2(1e-6));
+        vec2 tg = vec2(-nrm.y, nrm.x);
+        float tang = 0.0, ridge = 0.0;
+        for (int i = 0; i < ${MAXC}; i++) {
+          if (i >= nc) break;
+          vec4 C = cr[i];                              // angle, amount, width, reach
+          float a = mod(th - C.x + PI, TAU) - PI;
+          float x = a / C.z, g = exp(-x * x), f = exp(-d / C.w);
+          tang += C.y * x * g * f;                     // cloth gathered toward the fold
+          ridge += abs(C.y) * g * f;
+        }
+        float rad = pull * exp(-d / pullReach);
+        q = p + (tg * tang + nrm * rad) * L * m;
+        light = shade * ridge * m;
+      }
+      gl_FragColor = texture2D(tex, q / size) + vec4(vec3(light), 0.0);
+    }`));
+  gl.linkProgram(prog);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+  gl.useProgram(prog);
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  const aLoc = gl.getAttribLocation(prog, 'a'); gl.enableVertexAttribArray(aLoc);
+  gl.vertexAttribPointer(aLoc, 2, gl.FLOAT, false, 0, 0);
+  const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  const U = {};
+  for (const name of ['size', 'box', 'mode', 'pts', 'n', 'R', 'S', 'rest', 'word', 'cr', 'nc', 'L', 'pull', 'pullReach', 'margin', 'shade',
+                      'wamp', 'wphase', 'wlen', 'uoff', 'wreach', 'wstr'])
+    U[name] = gl.getUniformLocation(prog, name);
+  let screen = null, pts = [], rest = null, folds = [], seed = 0, raf = 0, uploaded = -1;
+
+  function set(cellRects, scr) {
+    screen = scr;
+    pts = [];
+    for (const c of cellRects) for (const g of c.glyphs || []) pts.push((g.col + 0.5) * scr.cw, (g.row + 0.5) * scr.ch);
+    pts = pts.slice(0, MAX * 2);
+    if (!pts.length) { cv.style.display = 'none'; if (raf) cancelAnimationFrame(raf); raf = 0; return; }
+    // the word's cells at rest, in canvas pixels
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (let i = 0; i < pts.length; i += 2) {
+      x0 = Math.min(x0, pts[i]); x1 = Math.max(x1, pts[i]); y0 = Math.min(y0, pts[i + 1]); y1 = Math.max(y1, pts[i + 1]);
+    }
+    rest = [x0 - scr.cw / 2, y0 - scr.ch / 2, x1 + scr.cw / 2, y1 + scr.ch / 2];
+    // the folds: irregularly spaced, each its own strength, width and length
+    const P = CFG.gravity;
+    if (seed !== cellRects[0].seed || folds.length !== Math.min(P.creases, MAXC)) {
+      seed = cellRects[0].seed;
+      const rnd = Holy.rng(seed * 7919 + 13);
+      folds = [];
+      const nF = Math.min(P.creases, MAXC);
+      for (let i = 0; i < nF; i++) folds.push({
+        angle: (i + rnd() * 0.85) / nF * Math.PI * 2, amp: (0.35 + rnd() * 0.9) * (rnd() < 0.85 ? 1 : -0.6),
+        width: 0.6 + rnd() * 0.9, reach: 0.4 + rnd() * 1.0, rate: 0.03 + rnd() * 0.06, ph: rnd() * 100,
+      });
+    }
+    const v = scr.view;
+    if (cv.width !== v.width || cv.height !== v.height) { cv.width = v.width; cv.height = v.height; }
+    for (const k of ['left', 'top', 'width', 'height']) cv.style[k] = v.style[k];
+    cv.classList.toggle('smooth', v.classList.contains('smooth'));
+    cv.style.display = 'block';
+    frame(performance.now());                         // at once, so the warp never lags the screen
+  }
+  function frame(now) {
+    if (raf) { cancelAnimationFrame(raf); raf = 0; }
+    if (!pts.length) return;
+    const P = CFG.gravity, t = Holy.time(now), Lh = screen.ch;
+    const dy = Holy.lift(t) * Lh;                     // the field rides with the floating word
+    if (uploaded !== screen.version) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, screen.view);
+      uploaded = screen.version;
+    }
+    gl.viewport(0, 0, cv.width, cv.height);
+    gl.uniform2f(U.size, cv.width, cv.height);
+    const MODES = { pucker: 0, creases: 1, ripple: 2 };
+    const mode = MODES[q] ?? MODES[P.mode] ?? 2;
+    gl.uniform1i(U.mode, mode);
+    let reach;
+    if (mode === 2) {
+      const Lv = CFG.levitate, b = screen.view.getBoundingClientRect();
+      gl.uniform4f(U.rest, ...rest);
+      gl.uniform1f(U.L, Lh);
+      gl.uniform1f(U.wamp, Lv.amp); gl.uniform1f(U.wphase, t / Lv.period); gl.uniform1f(U.wlen, Lv.wavelength);
+      gl.uniform1f(U.uoff, b.left / (Lh * b.height / screen.view.height));   // window left edge, in line heights
+      gl.uniform1f(U.wreach, P.rippleReach); gl.uniform1f(U.wstr, P.rippleStrength);
+      reach = P.rippleReach * 7 * Lh;                  // past seven reaches the wave is under a thousandth
+    } else if (mode === 0) {
+      const flat = new Float32Array(MAX * 2); flat.set(pts);
+      for (let i = 1; i < pts.length; i += 2) flat[i] += dy;
+      gl.uniform2fv(U.pts, flat);
+      gl.uniform1i(U.n, pts.length / 2);
+      gl.uniform1f(U.R, P.radius * Lh);
+      gl.uniform1f(U.S, P.strength * (1 + P.breathe * Math.sin(t * Math.PI * 2 * P.breatheHz)));
+      reach = P.radius * Lh * 3.5;                   // past 3.5 radii a dent is under a thousandth
+    } else {
+      const cr = new Float32Array(MAXC * 4);
+      folds.forEach((f, i) => {
+        cr[i * 4] = f.angle + P.drift * Math.sin(t * f.rate * Math.PI * 2 + f.ph);
+        cr[i * 4 + 1] = P.amp * f.amp;
+        cr[i * 4 + 2] = P.width * f.width;
+        cr[i * 4 + 3] = P.reach * f.reach;
+      });
+      gl.uniform4fv(U.cr, cr);
+      gl.uniform1i(U.nc, folds.length);
+      gl.uniform4f(U.rest, ...rest);
+      gl.uniform4f(U.word, rest[0], rest[1] + dy, rest[2], rest[3] + dy);
+      gl.uniform1f(U.L, Lh);
+      gl.uniform1f(U.pull, P.pull); gl.uniform1f(U.pullReach, P.pullReach);
+      gl.uniform1f(U.margin, P.margin); gl.uniform1f(U.shade, P.shade);
+      reach = P.reach * 1.4 * Lh * 4;                  // the longest fold, out to where it is nearly flat
+    }
+    gl.uniform4f(U.box, rest[0] - reach, rest[1] - reach + Math.min(0, dy), rest[2] + reach, rest[3] + reach);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    raf = requestAnimationFrame(frame);
+  }
+  return { set };
+})();
+
+
+// the money, the Company's names and the secret names, from index.html.  earn() here only moves the
+// money; the game's also nudges the BUY NAMES tab.
+const state = { cents: 0, charges: {} };
+const earn = delta => { state.cents += delta; };
+const fmtMoney = c => (c < 0 ? '-' : '') + '$' + (Math.abs(c) / 100).toFixed(2);
+const UPGRADES = [
+  // waking: every word matches an amulet, for a while.
+  { id: 'waking', cost: 500, penalty: 7000, title: 'Waking Word ©2003', heb: 'נסמיקפין', rom: 'ni-som-ya-ka-fe-yin', charges: 20, desc: 'Fast amulets' },
+  // honeyed: whatever key you press, the right consonant comes out.
+  { id: 'honeyed', cost: 9000, penalty: 30000, title: 'Honeyed Word ©2007', heb: 'דבגטפנמלמלמל', rom: 'de-va-ge-ta-pe-na-mel-mel-mel', charges: 100, desc: 'Flawless speech' },
+];
+const consonantKey = rom => rom.replace(/[-aeiou]/g, '');
+const SECRET_NAMES = [
+  // wealth.  the vavs are read as vowels, so they are counted but never said.
+  { rom: 'ma-mon-kol-tsom-su-lam', heb: 'ממון קול צום סולם', holy: true,
+    effect() { if (state.cents < 13600000000) earn(13600000000 - state.cents); } },   // raises you to it, never lowers
+  // nothingness: whatever you owe comes to nothing
+  { title: 'Formless Word', rom: 'to-hu-va-vo-hu', heb: 'תהו ובהו',
+    effect() { if (state.cents < 0) earn(-state.cents); } },
+];
+/* ---- end of the copy ---- */
+</script>
+<script src="cigarette.js"></script>
+<script src="break.js"></script>
+<script>
+'use strict';
+// The lab: the CLOCK OUT tab with the break scene in it, and controls below.
+// Keystrokes go to the scene (the controls let go of focus after each use).
+// URL params preset the controls, e.g. ?style=fat&len=40&duration=30&lock=grey
+const scr = new Screen();
+const P = CFG.cigarette;
+const $ = id => document.getElementById(id);
+const q = new URLSearchParams(location.search);
+for (const k of ['style', 'len', 'duration', 'seed', 'speed', 'lock']) if (q.has(k)) $(k).value = q.get(k);
+
+let s = 0, playing = false, last = performance.now(), tab = 'CLOCK OUT';
+
+// what the game would hand the break: any name works out here, said with or
+// without its vowels.  a secret one as anywhere; a Company one too, with no
+// licence spent and no strike, because nothing out here is listening.
+Break.hear = typed => {
+  const said = consonantKey(typed.toLowerCase());
+  const sn = SECRET_NAMES.find(n => said.endsWith(consonantKey(n.rom)));
+  if (sn) return sn.holy ? { text: sn.rom.toUpperCase(), fg: CFG.colors.bright, bold: true, holy: true, take: sn.effect }
+                         : { text: sn.rom.toUpperCase(), fg: CFG.colors.contract, take: sn.effect };
+  const u = UPGRADES.find(x => said.endsWith(consonantKey(x.rom)));
+  if (u) return { text: u.rom.toUpperCase(), fg: CFG.colors.contract,
+                  take() { state.charges[u.id] = (state.charges[u.id] || 0) + u.charges; } };   // as redeem(), but the stack is untouched
+  return null;
+};
+
+function sync() {
+  P.style = $('style').value;
+  P.len = Math.max(8, Math.min(scr.cols - 6, parseInt($('len').value, 10) || 32));
+  P.duration = Math.max(1, parseFloat($('duration').value) || 60);
+  P.smoke = $('smoke').checked;
+  P.seed = parseInt($('seed').value, 10) || 1;
+  CFG.breakScene.lock = $('lock').value;
+  if (document.activeElement !== $('cash')) $('cash').value = (state.cents / 100).toFixed(2);
+}
+
+function frame(now) {
+  const dt = (now - last) / 1000; last = now;
+  sync();
+  if (playing) s = Math.min(P.duration, s + dt * parseFloat($('speed').value));
+  if (s >= P.duration) playing = false;
+  $('play').textContent = playing ? 'pause' : 'play';
+  $('scrub').value = s / P.duration;
+  $('clock').textContent = `${s.toFixed(1)}s`;
+
+  const C = CFG.colors, cols = scr.cols, rows = scr.rows;
+  scr.clear();
+  const chrome = $('chrome').checked;
+  if (chrome) {
+    scr.text(1, 0, 'countenance', C.fg);
+    scr.box(0, 1, cols, rows - 3, tab);
+    // the tab bar: shut while the cigarette burns, hidden or greyed
+    const ty = rows - 1, lock = Break.locked() ? CFG.breakScene.lock : null;
+    if (lock !== 'hide') {
+      const grey = lock === 'grey';
+      const barBg = grey ? '#303030' : C.tabBg, barFg = grey ? '#5a5a5a' : C.tabFg;
+      scr.fill(0, ty, cols, 1, ' ', barFg, barBg);
+      let tx = 1;
+      for (const t of ['SPEAK', 'BUY NAMES', 'OFFICE', 'CLOCK OUT']) {
+        if (t === 'CLOCK OUT') tx += 2;
+        const label = ` ${t} `, active = t === tab;
+        scr.text(tx, ty, label, active ? (grey ? '#303030' : C.tabActFg) : barFg, active ? (grey ? '#5a5a5a' : C.tabActBg) : barBg, active);
+        tx += label.length + 1;
+      }
+      if (!grey) scr.text(cols - 8, ty, '←→ tabs', C.tabFg, C.tabBg);
+    }
+  }
+  if (tab === 'SPEAK') {
+    scr.text(3, 3, '(lab) The SPEAK tab.  Any key to step outside again.', C.dim);
+    scr.text(3, 5, 'Balance: ', C.fg); scr.text(12, 5, fmtMoney(state.cents), C.money, null, true);
+    UPGRADES.forEach((u, i) => {
+      const left = state.charges[u.id] || 0;
+      scr.text(3, 7 + i, u.title.replace(/\s*©.*$/, '').toUpperCase(), left ? C.contract : C.dim);
+      scr.text(20, 7 + i, `${left} charges`, left ? C.contract : C.dim);
+    });
+  }
+  else Break.draw(scr, 2, 2, cols - 4, rows - 5, now, s);
+  scr.render();
+  const holy = tab === 'SPEAK' ? [] : Break.holyCells;
+  Radiance.set(holy, scr); Gravity.set(holy, scr); Levitate.set(holy, scr);
+  requestAnimationFrame(frame);
+}
+
+function again() { Break.reset(); s = 0; playing = false; tab = 'CLOCK OUT'; }
+$('play').onclick = () => { if (s >= P.duration) s = 0; playing = !playing; };
+$('again').onclick = again;
+$('scrub').oninput = e => { s = e.target.value * P.duration; playing = false; };
+// let go of focus after every use, so the next keystroke goes to the scene
+for (const el of document.querySelectorAll('#bar button, #bar select, #bar input[type=checkbox], #bar input[type=range]'))
+  el.addEventListener(el.tagName === 'BUTTON' ? 'click' : 'change', () => el.blur());
+$('cash').addEventListener('change', e => { state.cents = Math.round(parseFloat(e.target.value || 0) * 100); });
+for (const el of document.querySelectorAll('#bar input[type=number]'))
+  el.addEventListener('keydown', e => { if (e.key === 'Enter') el.blur(); });
+
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' && e.target.type === 'number' || e.target.tagName === 'SELECT') return;
+  if (tab === 'SPEAK') { again(); e.preventDefault(); return; }
+  const r = Break.key(e, performance.now());
+  if (r) e.preventDefault();
+  if (r === 'light') { s = 0; playing = true; }
+  if (r === 'back') tab = 'SPEAK';
+});
+window.addEventListener('resize', () => scr.resize());
+document.fonts.ready.then(() => scr.resize());
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
