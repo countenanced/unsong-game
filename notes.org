@@ -1,3 +1,5 @@
+
+* First pass (done)
 1. This project has several components, and I'll start with some of the first.
 2. It is designed to be an ncurses interface in the browser.
 3. Not just sort of like ncurses, but ideally faithful enough to be
@@ -69,6 +71,68 @@
     want my git username for this project and only this project to be
     leylinear@gmail.com and for my name to be Leyline. We can do that
     later.
-19. Idea for later: hire someone to chant the waking word over you,
-    so you always have at least 10 waking words whenever you can
-    afford it.
+
+
+* Definitive next steps
+1. We should push only to logical.ai when making developmental
+   changes. I'll use github only for publishing prod changes.
+2. Change the upgrade tab to say BUY NAMES
+3. Change the upgrade tab so that selection only applies to the subset
+   of buyable words and nothing is selected or selectable when you
+   have fully insufficient funds.
+4. When you are typing a purchased word, the highlight color should be
+   that blue color instead of the usual gold.
+5. And probably it should say the name of the word in the typing area
+   or somewhere. We're short on space, but maybe in the money column?
+   
+
+* Inchohate ideas for later
+1. Hire someone to chant the waking word over you, so you always have
+   at least 10 waking words whenever you can afford it.
+2. "Real time" clock. Might display a faster-than-real-time value,
+   such as starting at 8:00am and progressing from there, but
+   nonetheless it is a clock that proceeds independent of keypresses.
+3. Cigarette breaks. You can earn more through social quota. In
+   fiction, they secretly give you the opportunity to speak words away
+   from your microphone and surveillance. (Though taking too many
+   breaks will raise suspicions).
+4. Names of god: You will not find original names, i.e. uncopyrighted
+   names that have true power, until late game. The whole conceit
+   behind your job is to say names aloud; most are ineffective but
+   some of them are new copyrightable names that have effects and
+   which the company will get to copyright when (if!) they learn about
+   them.
+5. Hacking the computers to disable surveillance and copyright
+   restrictions.
+6. Higher-tier, rarer gematria. Many possible implementations,
+   e.g. one of your words in the wordlist is a (much rarer) gematria
+   match that when matched pays out a lot more money.
+7. Social capital. You should have a social capital score that is
+   about earning trust with the company and fulfilling your quotas
+   (may require real time clock).
+8. Ooh what if you could buy a real time clock to keep on your desk in
+   your office and this unlocks things that are only possible if you
+   can track real time.
+9. Passive income. Idle games are fun when there are ways to passively
+   earn income. In the conceit of this game, words only have effects
+   when they're spoken by ensouled beings, so one must be a little
+   careful about how to implement this. I think "hired lackeys" and in
+   general managerial promotion is one possible framework for this ---
+   hire people to pray over you.
+10. The Jojo mart track: one unintended side effect of the honeyed
+    word is that it makes it impossible to violate copyright. This is
+    interesting. It suggests that whereas one track in this game is to
+    overthrow the whole system, another track is to play by its rules
+    and master it. To wholeheartedly throw your weight behind
+    copyright and its enforcement and allow yourself to be bound by
+    it, in order to become powerful within that system.
+11. We currently have several sorts of "depletable charges" --- for
+    the waking word, the honeyed word. Need to think about how and
+    where to display those.
+12. Friend root suggested that in fiction, all the short words will
+    have already been said, so maybe nix two syllable words and maybe
+    even require the words to be much longer than that. Brutal because
+    payouts are still fixed per word, but good to think
+    about. Thinking about this as part of thinking about the
+    non-placeholder-word-generator.
+   
