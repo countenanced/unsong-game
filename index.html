@@ -1355,7 +1355,7 @@ const SECRET_NAMES = [
 // things for the office, bought once
 const OFFICE_ITEMS = [
   { id: 'clock', label: 'Buy a wall clock.', cost: 1000, owned: () => state.clock,
-    buy() { state.clock = true; state.clockT = CFG.clock.dayStart; state.wordsLeft = CFG.clock.wordsPerHour; } },
+    buy() { state.clock = true; state.clockT = CFG.clock.dayStart; state.breakDue = false; state.wordsLeft = CFG.clock.wordsPerHour; } },
 ];
 
 // ---------- the SPEAK tab ----------
@@ -1373,7 +1373,8 @@ const state = {
   infractions: 0,          // the permanent record
   clock: false,            // a wall clock bought for the office: time passes, and breaks can be earned
   clockT: 0,               // what it says, in seconds after midnight
-  wordsLeft: 0,            // words still to say from the prompt before a break; back to the full count every hour, and after each break
+  breakDue: false,         // the top of the hour has come since the last break (or since the clock went up)
+  wordsLeft: 0,            // ...and these words are still to say from the prompt before you go; back to the full count every hour
   officeSel: 0,            // highlighted row on the OFFICE tab
   litAt: 0,                // when the cigarette was lit, on the performance clock (not saved: a reload puts it out)
   tabBlink: 0,             // half-blinks left on the BUY NAMES tab after money crosses a price
@@ -1516,7 +1517,7 @@ function speakSuccess() {
       replenishAmulets();
     }
     if (state.word.grants) redeem(state.word.grants);   // the bought word, now spoken
-    if (!state.word.free && state.clock && state.wordsLeft > 0) state.wordsLeft--;   // one more done before the break
+    if (!state.word.free && state.clock && state.breakDue && state.wordsLeft > 0) state.wordsLeft--;   // one more done before the break
     if (!state.word.free) for (const id of Object.keys(state.charges)) {
       if (--state.charges[id] <= 0) {
         delete state.charges[id];
@@ -1715,14 +1716,14 @@ function handleKey(e) {
 
 const devBreaks = new URLSearchParams(location.search).has('breaks');   // dev: the break before it is earned (not saved)
 // out the door once the clock is up and the hour's words are said; and, once out, until you are back in
-const breaksOpen = () => devBreaks || Break.captive() || state.clock && state.wordsLeft <= 0;
+const breaksOpen = () => devBreaks || Break.captive() || state.clock && state.breakDue && state.wordsLeft <= 0;
 function clockOutKey(e) {
   const smoked = ['smoking', 'out'].includes(Break.phase());
   const r = Break.key(e, performance.now());
   if (r) e.preventDefault();
   if (r === 'light') {
     state.litAt = performance.now();
-    if (state.clock) { state.wordsLeft = CFG.clock.wordsPerHour; save(); }   // the break is taken: the next one is earned afresh
+    if (state.clock) { state.breakDue = false; save(); }   // the break is taken: wait for the next hour
   }
   if (r === 'back') {
     state.tab = 'SPEAK';
@@ -2107,8 +2108,8 @@ function drawClockOut(x0, y0, w, h) {
   if (!breaksOpen()) {
     if (!state.clock) { scr.text(x0 + 1, y0 + 1, "It's not time to take a break yet.", C.fg); return; }
     const mins = Math.ceil((3600 - state.clockT % 3600) / 60);   // to the hour
-    scr.text(x0 + 1, y0 + 1, `Just ${mins} minute${mins === 1 ? '' : 's'} left.`, C.fg);
-    scr.text(x0 + 1, y0 + 2, `I should do some words before I go. ${state.wordsLeft}`, C.fg);
+    scr.text(x0 + 1, y0 + 1, state.breakDue ? `I should do some words before I go. ${state.wordsLeft}`
+                                            : `Just ${mins} minute${mins === 1 ? '' : 's'} left.`, C.fg);
     return;
   }
   const now = performance.now();
@@ -2194,7 +2195,7 @@ function save() {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       cents: state.cents, amulets: state.amulets.map(a => a.heb), log: state.log.slice(-200),
       stack: state.stack, charges: state.charges, infractions: state.infractions,
-      clock: state.clock, clockT: Math.round(state.clockT), wordsLeft: state.wordsLeft,
+      clock: state.clock, clockT: Math.round(state.clockT), breakDue: state.breakDue, wordsLeft: state.wordsLeft,
       modal: state.modal ? { kind: state.modal.kind, id: state.modal.id, showAt: state.modal.showAt, applied: state.modal.applied } : null,
     }));
   } catch (e) { /* private window or storage disabled: play on without memory */ }
@@ -2222,6 +2223,7 @@ function load() {
     state.infractions = d.infractions || 0;
     state.clock = !!d.clock;
     state.clockT = d.clockT || CFG.clock.dayStart;
+    state.breakDue = !!d.breakDue;
     state.wordsLeft = d.wordsLeft ?? CFG.clock.wordsPerHour;
     state.modal = d.modal || null;
     return true;
@@ -2243,7 +2245,7 @@ window.addEventListener('error', e => {
 
 state.intro = INTRO.map(l => '  ' + l);
 load();
-Clock.onHour = () => { state.wordsLeft = CFG.clock.wordsPerHour; save(); };   // a new hour, a new count
+Clock.onHour = () => { state.breakDue = true; state.wordsLeft = CFG.clock.wordsPerHour; save(); };   // the top of the hour: a break is due, after the words
 addEventListener('pagehide', save);                  // the clock's last minutes, kept
 replenishAmulets();
 { // dev: ?demo=N pre-fills N spoken words so the scrolling can be inspected
