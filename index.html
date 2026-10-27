@@ -499,6 +499,9 @@ function applyViolation(m) {
   earn(-u.penalty);
   state.infractions++;
   logLine(`  ${u.rom.toUpperCase()}`, CFG.colors.bad, true, u.heb, gval(u.heb), -u.penalty);
+  // the word was still said, and words work: its power arrives along with the fine
+  if (u.charges) state.charges[u.id] = (state.charges[u.id] || 0) + u.charges;
+  replenishAmulets();
   m.applied = true;
   save();
 }
