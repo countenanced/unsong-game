@@ -902,6 +902,7 @@ CFG.breakScene = {
   escHint: '(Press ESC to go back inside early.)',
   escColor: '#4a4a4a',       // faint grey
 };
+if (new URLSearchParams(location.search).has('serene')) CFG.breakScene.thoughts = [];   // dev: ?serene, a break with no thoughts
 const Break = (() => {
   let st;
   function reset() {
