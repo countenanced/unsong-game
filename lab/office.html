@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>countenance — office lab</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #000; height: 100%; overflow: hidden; user-select: none; }
+  canvas#screen { display: block; position: absolute; image-rendering: pixelated; image-rendering: crisp-edges; }
+  /* the lab's own controls, outside the terminal */
+  #bar {
+    position: absolute; left: 0; right: 0; bottom: 0; height: 64px; box-sizing: border-box;
+    display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; padding: 4px 12px;
+    background: #111; border-top: 1px solid #333; color: #aaa; overflow: auto;
+    font: 13px "Cascadia Mono", "Liberation Mono", "DejaVu Sans Mono", monospace;
+  }
+  #bar label { display: flex; align-items: center; gap: 4px; white-space: nowrap; }
+  #bar input[type=range] { width: 90px; }
+  #bar button { background: #000; color: #ddd; border: 1px solid #444; font: inherit; padding: 1px 6px; }
+  #bar .sep { color: #444; }
+  #bar .read { color: #ffd75f; min-width: 7ch; }
+</style>
+</head>
+<body>
+<canvas id="screen"></canvas>
+<div id="bar">
+  <button id="all">all</button><button id="none">bare</button>
+  <span id="items"></span>
+  <span class="sep">│</span>
+  <label>room <select id="style"><option>flat</option><option>box</option><option>perspective</option><option>blocks</option></select></label>
+  <label>surfaces <input id="bg" type="checkbox" checked></label>
+  <label>grid <input id="grid" type="checkbox"></label>
+  <label>vp x <input id="vpx" type="range" min="30" max="70" value="50"></label>
+  <label>vp y <input id="vpy" type="range" min="2" max="14" value="6"></label>
+  <label>panel w <input id="bw" type="range" min="30" max="80" value="56"></label>
+  <label>panel h <input id="bh" type="range" min="10" max="17" value="16"></label>
+  <span class="sep">│</span>
+  <label>wisps <input id="plumes" type="range" min="1" max="12" value="7"><span class="read" id="plumes-v"></span></label>
+  <label>rise <input id="rise" type="range" min="0.4" max="3" step="0.1" value="1.6"><span class="read" id="rise-v"></span></label>
+  <label>height <input id="height" type="range" min="2" max="10" value="7"><span class="read" id="height-v"></span></label>
+  <label>wind <input id="wind" type="range" min="0" max="1.2" step="0.05" value="0.6"><span class="read" id="wind-v"></span></label>
+  <label>on <input id="on" type="range" min="1" max="20" value="4"><span class="read" id="on-v"></span></label>
+  <label>dormant <input id="dormant" type="range" min="2" max="90" value="15"><span class="read" id="dormant-v"></span></label>
+  <button id="copy">copy text</button>
+</div>
+<script src="office.js"></script>
+<script>
+'use strict';
+const LAB_BAR = 64;
+
+/* ---- copied from index.html: CFG (without its tuning blocks) and Screen.
+   Only the resize() height differs.  Re-copy if those change upstream. ---- */
+const CFG = {
+  fontFamily: '"Cascadia Mono", "Liberation Mono", "DejaVu Sans Mono", monospace',
+  fontPx: 20,              // native render size; bigger = sharper after scaling
+  lineHeight: 1.25,
+  cols: 104, rows: 30,      // fixed terminal size; scaled to fit the window
+  colors: {
+    bg:        '#000000',
+    fg:        '#c8c8c8',   // ordinary text
+    dim:       '#5a5a5a',   // typed / spent
+    bright:    '#ffffff',
+    border:    '#8a8a8a',
+    tabBg:     '#1c3f95',
+    tabFg:     '#ffffff',
+    tabActBg:  '#ffffff',
+    tabActFg:  '#1c3f95',
+  },
+};
+class Screen {
+  constructor() {
+    this.view = document.getElementById('screen');
+    this.ctx = this.view.getContext('2d');
+    const q = new URLSearchParams(location.search);
+    this.smooth = q.has('smooth');
+    if (q.get('font')) CFG.fontPx = parseInt(q.get('font'), 10);   // dev: ?font=28
+    if (q.get('cols')) CFG.cols = parseInt(q.get('cols'), 10);     // dev: ?cols=80&rows=24
+    if (q.get('rows')) CFG.rows = parseInt(q.get('rows'), 10);
+    if (q.get('juice') != null) CFG.juice = parseFloat(q.get('juice'));
+    this.resize();
+  }
+  resize() {
+    const W = window.innerWidth, H = window.innerHeight - LAB_BAR;
+    this.ctx.font = `${CFG.fontPx}px ${CFG.fontFamily}`;
+    this.cw = Math.round(this.ctx.measureText('M').width);
+    this.ch = Math.round(CFG.fontPx * CFG.lineHeight);
+    this.cols = CFG.cols; this.rows = CFG.rows;
+    // the canvas holds the grid at native resolution; CSS stretches it to fit
+    // the window (letterboxed), and the compositor does the nearest-neighbour
+    // upscale for free.  that uneven stretch is the aliasing we want.
+    this.view.width = this.cols * this.cw;
+    this.view.height = this.rows * this.ch;
+    const sc = Math.min(W / this.view.width, H / this.view.height);
+    const dw = Math.round(this.view.width * sc), dh = Math.round(this.view.height * sc);
+    this.view.style.width = dw + 'px'; this.view.style.height = dh + 'px';
+    this.view.style.left = Math.floor((W - dw) / 2) + 'px';
+    this.view.style.top = Math.floor((H - dh) / 2) + 'px';
+    this.cells = new Array(this.cols * this.rows);
+    this.shown = new Array(this.cols * this.rows);   // what is currently painted
+    this.clear();
+    this.ctx.fillStyle = CFG.colors.bg; this.ctx.fillRect(0, 0, this.view.width, this.view.height);
+    for (let i = 0; i < this.shown.length; i++) this.shown[i] = null;
+  }
+  clear() {
+    for (let i = 0; i < this.cells.length; i++) this.cells[i] = null;
+  }
+  // put a single character at (col,row)
+  put(col, row, ch, fg = CFG.colors.fg, bg = null, bold = false) {
+    if (col < 0 || row < 0 || col >= this.cols || row >= this.rows) return;
+    this.cells[row * this.cols + col] = { ch, fg, bg, bold };
+  }
+  text(col, row, str, fg, bg, bold) {
+    str = str == null ? '' : String(str);
+    for (let i = 0; i < str.length; i++) this.put(col + i, row, str[i], fg, bg, bold);
+  }
+  fill(col, row, w, h, ch, fg, bg) {
+    for (let r = row; r < row + h; r++) for (let c = col; c < col + w; c++) this.put(c, r, ch, fg, bg);
+  }
+  box(col, row, w, h, title, fg = CFG.colors.border) {
+    this.put(col, row, '┌', fg); this.put(col + w - 1, row, '┐', fg);
+    this.put(col, row + h - 1, '└', fg); this.put(col + w - 1, row + h - 1, '┘', fg);
+    for (let c = col + 1; c < col + w - 1; c++) { this.put(c, row, '─', fg); this.put(c, row + h - 1, '─', fg); }
+    for (let r = row + 1; r < row + h - 1; r++) { this.put(col, r, '│', fg); this.put(col + w - 1, r, '│', fg); }
+    if (title) {
+      const t = `┤ ${title} ├`;
+      this.text(col + 2, row, t, fg);
+      this.text(col + 4, row, title, CFG.colors.bright, null, true);
+    }
+  }
+  static same(a, b) {
+    if (a === b) return true;
+    if (!a || !b) return (!a || (a.ch === ' ' || !a.ch) && !a.bg) && (!b || (b.ch === ' ' || !b.ch) && !b.bg);
+    return a.ch === b.ch && a.fg === b.fg && a.bg === b.bg && !!a.bold === !!b.bold;
+  }
+  render() {
+    // repaint only the cells that differ from what is on screen, like a
+    // terminal does.  the font is set only when it changes between cells.
+    const o = this.ctx, n = this.cells.length;
+    o.textBaseline = 'middle';
+    o.textAlign = 'center';
+    let font = null, fg = null;
+    for (let i = 0; i < n; i++) {
+      const cell = this.cells[i], prev = this.shown[i];
+      if (Screen.same(cell, prev)) continue;
+      const c = i % this.cols, r = (i / this.cols) | 0;
+      const x = c * this.cw, y = r * this.ch;
+      o.fillStyle = (cell && cell.bg) || CFG.colors.bg;
+      o.fillRect(x, y, this.cw, this.ch);
+      fg = null;                                   // fillStyle is now the background colour
+      if (cell && cell.ch && cell.ch !== ' ') {
+        const f = cell.bold ? 'bold' : 'normal';
+        if (f !== font) { o.font = `${f} ${CFG.fontPx}px ${CFG.fontFamily}`; font = f; }
+        if (cell.fg !== fg) { o.fillStyle = cell.fg; fg = cell.fg; }
+        o.fillText(cell.ch, x + this.cw / 2, y + this.ch / 2 + 1);
+      }
+      this.shown[i] = cell;
+    }
+    this.view.classList.toggle('smooth', this.smooth);
+    this.version = (this.version || 0) + 1;      // for anything that copies the screen (the gravity)
+  }
+}
+
+
+// the office clock's painter (CFG.clock, Clock.digit and Clock.paint), with the
+// rectangle and the time passed in instead of taken from the tab bar and the state
+CFG.clock = {
+  on:  '#a8382e',            // a lit segment: a muted red
+  off: '#170605',            // an unlit one, faintly there as on a real display
+  bg:  '#000000',
+};
+const SEGS = ['abcdef', 'bc', 'abdeg', 'abcdg', 'bcfg', 'acdfg', 'acdefg', 'abc', 'abcdefg', 'abcdfg'];
+function digit(o, x, y, w, h, th, lit) {
+  const K = CFG.clock;
+  const gap = th * 0.18, half = th / 2;
+  // a segment from (x1,y1) to (x2,y2), pointed at both ends
+  const seg = (x1, y1, x2, y2) => {
+    const horiz = y1 === y2;
+    o.beginPath();
+    if (horiz) {
+      x1 += gap; x2 -= gap;
+      o.moveTo(x1, y1); o.lineTo(x1 + half, y1 - half); o.lineTo(x2 - half, y1 - half);
+      o.lineTo(x2, y1); o.lineTo(x2 - half, y1 + half); o.lineTo(x1 + half, y1 + half);
+    } else {
+      y1 += gap; y2 -= gap;
+      o.moveTo(x1, y1); o.lineTo(x1 + half, y1 + half); o.lineTo(x1 + half, y2 - half);
+      o.lineTo(x1, y2); o.lineTo(x1 - half, y2 - half); o.lineTo(x1 - half, y1 + half);
+    }
+    o.closePath(); o.fill();
+  };
+  const L = x + half, R = x + w - half, T = y + half, M = y + h / 2, B = y + h - half;
+  const at = { a: [L, T, R, T], b: [R, T, R, M], c: [R, M, R, B], d: [L, B, R, B],
+               e: [L, M, L, B], f: [L, T, L, M], g: [L, M, R, M] };
+  for (const s of 'abcdefg') {
+    o.fillStyle = lit && lit.includes(s) ? K.on : K.off;
+    seg(...at[s]);
+  }
+}
+function paintClock(o, X, Y, W, H, clockT) {
+  const K = CFG.clock;
+  o.save();
+  o.beginPath(); o.rect(X, Y, W, H); o.clip();
+  o.fillStyle = K.bg; o.fillRect(X, Y, W, H);
+
+  const mins = Math.floor(clockT / 60), h24 = Math.floor(mins / 60), m = mins % 60;
+  const h12 = (h24 + 11) % 12 + 1, pm = h24 >= 12;
+  const dh = H * 0.72, dw = dh * 0.5, th = Math.max(2, dh * 0.13), sp = th * 1.4, colon = th * 2.4;
+  const amW = H * 0.42;                                      // room for AM/PM
+  const total = 4 * dw + 3 * sp + colon + sp + amW;
+  let x = X + (W - total) / 2;
+  const y = Y + (H - dh) / 2;
+  const digits = [h12 >= 10 ? SEGS[1] : null, SEGS[h12 % 10], SEGS[Math.floor(m / 10)], SEGS[m % 10]];
+  digits.forEach((lit, i) => {
+    digit(o, x, y, dw, dh, th, lit);
+    x += dw + sp;
+    if (i === 1) {                                           // the colon, steady
+      o.fillStyle = K.on;
+      const cx = x - sp / 2 + colon / 2 - th / 2;
+      o.fillRect(cx, y + dh * 0.3 - th / 2, th, th);
+      o.fillRect(cx, y + dh * 0.7 - th / 2, th, th);
+      x += colon;
+    }
+  });
+  o.font = `bold ${Math.max(7, Math.round(H * 0.3))}px ${CFG.fontFamily}`;
+  o.textAlign = 'left'; o.textBaseline = 'alphabetic';
+  o.fillStyle = pm ? K.off : K.on; o.fillText('AM', x, y + dh * 0.42);
+  o.fillStyle = pm ? K.on : K.off; o.fillText('PM', x, y + dh);
+  o.restore();
+}
+/* ---- end of the copy ---- */
+
+const scr = new Screen();
+const on = {};
+for (const it of Office.ITEMS) on[it.id] = true;
+
+// the frame the game puts round the OFFICE tab: title row, box, tab bar
+function draw(t = 0) {
+  const C = CFG.colors, cols = scr.cols, rows = scr.rows;
+  scr.clear();
+  scr.text(1, 0, 'countenance', C.fg);
+  scr.box(0, 1, cols, rows - 3, 'OFFICE');
+  const cells = Office.render(on, t);
+  for (let y = 0; y < Office.H; y++) for (let x = 0; x < Office.W; x++) {
+    const c = cells[y * Office.W + x];
+    scr.put(2 + x, 2 + y, c.ch, c.fg, c.bg);
+  }
+  const ty = rows - 1;
+  scr.fill(0, ty, cols, 1, ' ', C.tabFg, C.tabBg);
+  let tx = 1;
+  for (const t of ['SPEAK', 'BUY NAMES', 'OFFICE', 'CLOCK OUT']) {
+    if (t === 'CLOCK OUT') tx += 2;
+    const label = ` ${t} `, active = t === 'OFFICE';
+    scr.text(tx, ty, label, active ? C.tabActFg : C.tabFg, active ? C.tabActBg : C.tabBg, active);
+    tx += label.length + 1;
+  }
+  const hint = '←→ tabs  Esc menu';
+  scr.text(cols - hint.length - 1, ty, hint, C.tabFg, C.tabBg);
+  scr.render();
+  // the wall clock's face is painted over its cells, as the tab bar's is
+  for (const it of Office.ITEMS) if (it.face && on[it.id]) {
+    const f = it.face;
+    paintClock(scr.ctx, (2 + it.x + f.dx) * scr.cw, (2 + it.y + f.dy) * scr.ch, f.w * scr.cw, f.h * scr.ch, 8 * 3600);
+    // the painted cells no longer hold what the screen thinks: repaint them next time
+    for (let y = 0; y < f.h; y++) for (let x = 0; x < f.w; x++) scr.shown[(2 + it.y + f.dy + y) * scr.cols + 2 + it.x + f.dx + x] = null;
+  }
+}
+
+// ---- the lab's controls ----
+const $ = id => document.getElementById(id);
+const itemsEl = $('items');
+for (const it of Office.ITEMS) {
+  const l = document.createElement('label');
+  const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = true;
+  cb.onchange = () => { on[it.id] = cb.checked; draw(); };
+  l.append(cb, it.label); itemsEl.append(l);
+}
+const setAll = v => { itemsEl.querySelectorAll('input').forEach(cb => cb.checked = v); for (const k in on) on[k] = v; draw(); };
+$('all').onclick = () => setAll(true);
+$('none').onclick = () => setAll(false);
+for (const k of ['vpx', 'vpy', 'bw', 'bh']) $(k).oninput = () => { Office.P[k] = parseInt($(k).value, 10); draw(); };
+for (const k of ['surfaces', 'grid']) $(k === 'surfaces' ? 'bg' : k).onchange = e => { Office.P[k] = e.target.checked; draw(); };
+// the steam's numbers, with what they are shown beside them
+const readout = k => $(k + '-v').textContent = k === 'dormant' ? `${Office.STEAM[k]}–${2 * Office.STEAM[k]} s` : k === 'on' ? `${Office.STEAM[k]} s` : Office.STEAM[k];
+for (const k of ['plumes', 'rise', 'height', 'wind', 'on', 'dormant']) {
+  $(k).oninput = () => { Office.STEAM[k] = parseFloat($(k).value); readout(k); };
+  readout(k);
+}
+$('style').onchange = e => { Office.P.style = e.target.value; draw(); };
+$('copy').onclick = () => navigator.clipboard.writeText(Office.toText(Office.render(on)));
+window.addEventListener('resize', () => { scr.resize(); draw(); });
+// the steam moves: redraw every frame (only the cells that change are repainted)
+const t0 = performance.now();
+(function frame() { draw((performance.now() - t0) / 1000); requestAnimationFrame(frame); })();
+</script>
+</body>
+</html>
