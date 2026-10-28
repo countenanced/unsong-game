@@ -148,39 +148,84 @@ TOHU VA VOHU
     in-fiction way to say it (licensing fine print?).
     
    
-15. The office clock. You have to buy a clock for your office before
-    any realtime effects unlock, breaks included. That's just a game
-    conceit. I imagine it putting a red seven segment display clock in
-    the bottom right of the screen. I haven't decided yet how I want
-    time to work. Buying the clock is necessary but not sufficient for
-    unlocking breaks; I haven't thought the mechanism through fully
-    yet.
-16. Someone outside. Sometimes when you go out (possibly depending on
-    suspicion) there's someone there from another department whom you
-    don't recognize. The tone isn't ominous at all. But if you
-    foolishly say a copyrighted or otherwise holy word in the presence
-    of another person, you get copyright struck at minimum. Maybe a
-    dialogue box for them, maybe not: I like the emptiness of the
-    cigarette page, truly meditative and texturally interesting.
-17. Keeping the outdoor speech a secret. To keep people from
-    keysmashing and discovering that you can speak outdoors, put a
-    message under the cigarette, maybe in a box, maybe not: "Nice to
-    get away from the desk for a while. Press ESC to head in early."
-    Another version: a canned sequence of interior thoughts, one every
-    five seconds: "Nice to get away from the desk for a while." "Kind
-    of cold today." "Can't wait til I can go home." That sort of
-    thing. Make it feel like an intentional noninteractive movie.
-18. Break timing is unsettled. Right now (placeholder) a break comes
-    due at each :00 and :30 on the office clock; once due it stays
-    open, words said and all, until you actually light up, and it
-    doesn't stack. The weird part: when the next one comes due
-    depends on when you lit up, not on a timer. Light up at 9:55 and
-    you're back at 10:05 with the next break already due; light up at
-    9:31 and you wait 29 minutes. The alternative is a rolling timer
-    (next break due 30 minutes after you come back in), which is
-    steadier but quietly costs you breaks if you dawdle. Real
-    workplaces do both: call centers schedule breaks at fixed times
-    and track adherence; state law (e.g. California) counts "10
-    minutes per 4 hours worked". Haven't decided what we actually
-    want; also open whether the Company should notice late, skipped,
-    or overlong breaks.
+1. The office clock. You have to buy a clock for your office before
+   any realtime effects unlock, breaks included. That's just a game
+   conceit. I imagine it putting a red seven segment display clock in
+   the bottom right of the screen. I haven't decided yet how I want
+   time to work. Buying the clock is necessary but not sufficient for
+   unlocking breaks; I haven't thought the mechanism through fully
+   yet.
+2. Someone outside. Sometimes when you go out (possibly depending on
+   suspicion) there's someone there from another department whom you
+   don't recognize. The tone isn't ominous at all. But if you
+   foolishly say a copyrighted or otherwise holy word in the presence
+   of another person, you get copyright struck at minimum. Maybe a
+   dialogue box for them, maybe not: I like the emptiness of the
+   cigarette page, truly meditative and texturally interesting.
+3. Keeping the outdoor speech a secret. To keep people from
+   keysmashing and discovering that you can speak outdoors, put a
+   message under the cigarette, maybe in a box, maybe not: "Nice to
+   get away from the desk for a while. Press ESC to head in early."
+   Another version: a canned sequence of interior thoughts, one every
+   five seconds: "Nice to get away from the desk for a while." "Kind
+   of cold today." "Can't wait til I can go home." That sort of
+   thing. Make it feel like an intentional noninteractive movie.
+4. Break timing is unsettled. Right now (placeholder) a break comes
+   due at each :00 and :30 on the office clock; once due it stays
+   open, words said and all, until you actually light up, and it
+   doesn't stack. The weird part: when the next one comes due
+   depends on when you lit up, not on a timer. Light up at 9:55 and
+   you're back at 10:05 with the next break already due; light up at
+   9:31 and you wait 29 minutes. The alternative is a rolling timer
+   (next break due 30 minutes after you come back in), which is
+   steadier but quietly costs you breaks if you dawdle. Real
+   workplaces do both: call centers schedule breaks at fixed times
+   and track adherence; state law (e.g. California) counts "10
+   minutes per 4 hours worked". Haven't decided what we actually
+   want; also open whether the Company should notice late, skipped,
+   or overlong breaks.
+5. "CORPORATE" points system. There are sort of two competing
+   systems. One is about attaining power by playing by the corporate
+   rules. Things like skipping breaks (maybe: every hour you don't go
+   on break) gives you more corporate points. The other is anarchist
+   power --- by breaking the system. Taking breaks gives you an
+   opportunity to say illicit words without being tracked. So you see
+   how they trade off against one another.
+
+   probably there are points for CORPORATE and points for ANARCHY
+   (placeholder names; actual names tbd). Probably I should create a
+   tab where you can see at least some of the things that earn you
+   points of each kind.
+
+   Name candidates (2026-10-28): still prefer CORPORATE / ANARCHY.
+   PIETY is the one real competitor for the corporate side so far
+   (corporate piety; devotion to the system; the theology leaks into
+   the job title). Keep it. PIRACY may be its opposite principle
+   (copyright piracy; the words are stolen goods), but not as good as
+   ANARCHY yet.
+6. Personalization: There is a game within a game, where you can buy
+   items for your office. Some, like the wall clock, are functional
+   and unlock game elements. Others have no obvious utility and seem
+   to be merely decorative (they may come back into the narrative
+   later). There's a question of who this player character is --- do
+   they have a personality and backstory that the game developer (me)
+   has predetermined? I think not. I think that the items you select
+   to decorate your office are the player's way of retroactively
+   defining their character's backstory and nature --- the choices
+   determine what sort of person this is.
+7. For every hour you don't go on break, you should get +1 piety. If
+   it's time to go on break, it currently gives you an "I should do 20
+   words first" or whatever message. I'm contemplating giving a
+   dialogue option to "TAKE A QUICK BREAK ANYWAYS" which should dock
+   you -1 piety or -2 piety, not sure, and maybe increase your anarchy
+   by +1 and maybe suspicion by +1. I'm still figuring out which
+   quantities are involved, and whether/how they are displayed to the
+   user. If you go outside after doing some work, that's like +0 piety
+   --- neither here nor there.
+8. If you say a pirated word, that's -1 piety, +1 anarchy. Not sure if
+   they're zero sum. I can imagine a version of the game where you're
+   tightroping both paths at the same time--- trying to appear
+   virtuous, using your power to do anarchy.
+9. Piety is how you get subordinates who can pray for you with the
+   Waking word.
+10. 
