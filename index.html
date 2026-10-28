@@ -1079,7 +1079,23 @@ const Break = (() => {
     }
   }
 
-  const api = { key, draw, reset, hear: null, holyCells: [], phase: () => st.phase,
+  // the break as it stands, with its moments as distances from now, so a reload can put it back (the
+  // names have been taken already: only their look comes along).  Nothing to keep from the menu.
+  function snapshot(now) {
+    if (st.phase === 'menu') return null;
+    return { phase: st.phase, sel: st.sel, typed: st.typed, spoke: st.spoke,
+             sinceKey: st.lastKey ? now - st.lastKey : null, hushLeft: Math.max(0, st.hushUntil - now),
+             spoken: st.spoken.map(w => ({ text: w.text, fg: w.fg, bold: w.bold, holy: w.holy, hold: w.hold, ago: now - w.at })) };
+  }
+  function restore(d, now) {
+    reset();
+    if (!d || !['ask', 'smoking', 'out'].includes(d.phase)) return;
+    st.phase = d.phase; st.sel = d.sel | 0; st.typed = d.typed || ''; st.spoke = !!d.spoke;
+    st.lastKey = d.sinceKey == null ? 0 : now - d.sinceKey; st.hushUntil = now + (d.hushLeft || 0);
+    st.spoken = (d.spoken || []).map(w => ({ ...w, at: now - w.ago }));
+  }
+
+  const api = { key, draw, reset, snapshot, restore, hear: null, holyCells: [], phase: () => st.phase,
                 endS: () => Cigarette.spent() + CFG.breakScene.afterAshS,
                 captive: () => st.phase !== 'menu', bare: (now, s) => { burnOut(now, s); return st.phase === 'smoking'; } };
   return api;
@@ -1382,7 +1398,7 @@ const state = {
   breakDue: false,         // a break time (:00 or :30) has come since the last break (or since the clock went up)
   wordsLeft: 0,            // ...and these words are still to say from the prompt before you go; the full count each time a break comes due
   officeSel: 0,            // highlighted row on the OFFICE tab
-  litAt: 0,                // when the cigarette was lit, on the performance clock (not saved: a reload puts it out)
+  litAt: 0,                // when the cigarette was lit, on the performance clock (saved as how long ago: a reload finds it still burning)
   nudge: {},               // tab -> half-blinks left on it: BUY NAMES after money crosses a price, CLOCK OUT when the break's state moves
   intro: [],               // the welcome, pinned at the top
   log: [],                 // history lines: {text, fg, bold, heb}
@@ -2297,6 +2313,8 @@ function save() {
       stack: state.stack, charges: state.charges, infractions: state.infractions,
       clock: state.clock, clockT: Math.round(state.clockT), breakDue: state.breakDue, paused: !!state.menu, wordsLeft: state.wordsLeft,
       modal: state.modal ? { kind: state.modal.kind, id: state.modal.id, showAt: state.modal.showAt, applied: state.modal.applied } : null,
+      // outside: the break as it stands, and how far the cigarette has burned, so a reload finds you still out there
+      brk: Break.captive() ? { ...Break.snapshot(performance.now()), litMs: performance.now() - state.litAt } : null,
     }));
   } catch (e) { /* private window or storage disabled: play on without memory */ }
 }
@@ -2327,6 +2345,11 @@ function load() {
     if (d.paused) state.menu = { sel: 0, confirm: null };   // left paused: still paused
     state.wordsLeft = d.wordsLeft ?? CFG.clock.wordsPerBreak;
     state.modal = d.modal || null;
+    if (d.brk) {                               // left outside: back out there, the cigarette where it was
+      const now = performance.now();
+      Break.restore(d.brk, now);
+      if (Break.captive()) { state.tab = 'CLOCK OUT'; state.litAt = now - (d.brk.litMs || 0); }
+    }
     return true;
   } catch (e) { return false; }
 }
