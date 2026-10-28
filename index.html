@@ -887,7 +887,7 @@ CFG.breakScene = {
   cooldownMs: 3000,          // after a name, you are hushed this long: no caret, and nothing more can be said
   holyMs: 3000,              // ...and a holy one floats in its light this long, then settles into the glass
   afterAshS: 1,              // once the last ash has fallen, this long before the ending dialogue
-  // while you smoke, a few thoughts drift by in a box where the dialogue was, one at a time
+  // while you smoke, a few thoughts drift by in a box where the dialogue was, one at a time (only with ?thoughts, for now)
   thoughts: [
     'Nice to get away from the desk for a while.',
     'Can\'t wait to go home.',
@@ -902,7 +902,7 @@ CFG.breakScene = {
   escHint: '(Press ESC to go back inside early.)',
   escColor: '#4a4a4a',       // faint grey
 };
-if (new URLSearchParams(location.search).has('serene')) CFG.breakScene.thoughts = [];   // dev: ?serene, a break with no thoughts
+if (!new URLSearchParams(location.search).has('thoughts')) CFG.breakScene.thoughts = [];   // a serene break by default; dev: ?thoughts for the interior monologue
 const Break = (() => {
   let st;
   function reset() {
