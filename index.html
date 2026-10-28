@@ -1324,8 +1324,10 @@ function earn(delta) {
   const before = UPGRADES.filter(u => state.cents >= u.cost).length;
   state.cents += delta;
   const after = UPGRADES.filter(u => state.cents >= u.cost).length;
-  if (after > before) state.tabBlink = 6;             // three blinks, in time with the cursor
+  if (after > before) nudge('BUY NAMES');
 }
+// a tab has something new behind it: three blinks, in time with the cursor
+const nudge = tab => { state.nudge[tab] = 6; };
 const fmtMoney = c => (c < 0 ? '-' : '') + '$' + (Math.abs(c) / 100).toFixed(2);
 
 // ---------- upgrades ----------
@@ -1358,7 +1360,7 @@ const SECRET_NAMES = [
 // things for the office, bought once
 const OFFICE_ITEMS = [
   { id: 'clock', label: 'Buy a wall clock.', cost: 1000, owned: () => state.clock,
-    buy() { state.clock = true; state.clockT = CFG.clock.dayStart; state.breakDue = false; state.wordsLeft = CFG.clock.wordsPerBreak; } },
+    buy() { state.clock = true; state.clockT = CFG.clock.dayStart; state.breakDue = false; state.wordsLeft = CFG.clock.wordsPerBreak; nudge('CLOCK OUT'); } },
 ];
 
 // ---------- the SPEAK tab ----------
@@ -1381,7 +1383,7 @@ const state = {
   wordsLeft: 0,            // ...and these words are still to say from the prompt before you go; the full count each time a break comes due
   officeSel: 0,            // highlighted row on the OFFICE tab
   litAt: 0,                // when the cigarette was lit, on the performance clock (not saved: a reload puts it out)
-  tabBlink: 0,             // half-blinks left on the BUY NAMES tab after money crosses a price
+  nudge: {},               // tab -> half-blinks left on it: BUY NAMES after money crosses a price, CLOCK OUT when the break's state moves
   intro: [],               // the welcome, pinned at the top
   log: [],                 // history lines: {text, fg, bold, heb}
   word: null,
@@ -1521,7 +1523,7 @@ function speakSuccess() {
       replenishAmulets();
     }
     if (state.word.grants) redeem(state.word.grants);   // the bought word, now spoken
-    if (!state.word.free && state.clock && state.breakDue && state.wordsLeft > 0) state.wordsLeft--;   // one more done before the break
+    if (!state.word.free && state.clock && state.breakDue && state.wordsLeft > 0 && --state.wordsLeft === 0) nudge('CLOCK OUT');   // one more done before the break; the last one earns it
     if (!state.word.free) for (const id of Object.keys(state.charges)) {
       if (--state.charges[id] <= 0) {
         delete state.charges[id];
@@ -2259,7 +2261,7 @@ function drawNow() {
   for (const t of bare ? [] : state.tabs) {
     if (t === 'CLOCK OUT') tx += 2;                  // set a little apart: leaving is not like the others
     const label = ` ${t} `;
-    const active = t === state.tab || (t === 'BUY NAMES' && state.tabBlink > 0 && state.blinkOn);
+    const active = t === state.tab || (state.nudge[t] > 0 && state.blinkOn);
     scr.text(tx, ty, label, active ? C.tabActFg : C.tabFg, active ? C.tabActBg : C.tabBg, active);
     tx += label.length + 1;
   }
@@ -2346,7 +2348,7 @@ state.intro = INTRO.map(l => '  ' + l);
 load();
 // :00 or :30: a break comes due, after the words.  one already due stays as it is, words said and all,
 // however many bells go by: only lighting up spends it
-Clock.onBell = () => { if (!state.breakDue) { state.breakDue = true; state.wordsLeft = CFG.clock.wordsPerBreak; save(); } };
+Clock.onBell = () => { if (!state.breakDue) { state.breakDue = true; state.wordsLeft = CFG.clock.wordsPerBreak; nudge('CLOCK OUT'); save(); } };
 addEventListener('pagehide', save);                  // the clock's last minutes, kept
 replenishAmulets();
 { // dev: ?demo=N pre-fills N spoken words so the scrolling can be inspected
@@ -2360,8 +2362,8 @@ replenishAmulets();
 newWord();
 
 setInterval(() => {
-  state.blinkOn = state.menu ? true : !state.blinkOn;   // 1 Hz: the cursor, the notice's flash, the BUY NAMES tab's nudge (held still while paused)
-  if (state.tabBlink > 0 && !state.menu) state.tabBlink--;
+  state.blinkOn = state.menu ? true : !state.blinkOn;   // 1 Hz: the cursor, the notice's flash, the tabs' nudges (held still while paused)
+  if (!state.menu) for (const t in state.nudge) if (state.nudge[t] > 0) state.nudge[t]--;
   draw();
 }, 500);
 setInterval(() => {
