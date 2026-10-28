@@ -170,3 +170,17 @@ TOHU VA VOHU
     five seconds: "Nice to get away from the desk for a while." "Kind
     of cold today." "Can't wait til I can go home." That sort of
     thing. Make it feel like an intentional noninteractive movie.
+18. Break timing is unsettled. Right now (placeholder) a break comes
+    due at each :00 and :30 on the office clock; once due it stays
+    open, words said and all, until you actually light up, and it
+    doesn't stack. The weird part: when the next one comes due
+    depends on when you lit up, not on a timer. Light up at 9:55 and
+    you're back at 10:05 with the next break already due; light up at
+    9:31 and you wait 29 minutes. The alternative is a rolling timer
+    (next break due 30 minutes after you come back in), which is
+    steadier but quietly costs you breaks if you dawdle. Real
+    workplaces do both: call centers schedule breaks at fixed times
+    and track adherence; state law (e.g. California) counts "10
+    minutes per 4 hours worked". Haven't decided what we actually
+    want; also open whether the Company should notice late, skipped,
+    or overlong breaks.

@@ -974,6 +974,7 @@ const Break = (() => {
         reset();
         return 'back';
       }
+      if (e.key === 'Escape') { reset(); return 'back'; }    // ESC always leaves the break
       return true;
     }
     if (st.phase !== 'smoking') return false;
@@ -1089,13 +1090,14 @@ const Break = (() => {
 // wall's: the day starts at 8:00 AM and runs fast enough that one cigarette
 // break, lighting to the last ash, is ten minutes.  It stops while the page is
 // put away and picks up where it left off (state.clockT, saved with the game).
-//   Clock.tick(now)           advance it to now (performance clock); calls Clock.onHour on the hour
+//   Clock.tick(now)           advance it to now (performance clock); calls Clock.onBell at each break time (every half hour)
 //   Clock.place(scr, col, row) reserve its cells (blank, black) before scr.render()
 //   Clock.paint(scr)          draw the digits over those cells, after scr.render(); not placed this frame, not drawn
 CFG.clock = {
   dayStart: 8 * 3600,        // seconds after midnight that the day begins
   breakMinutes: 10,          // a whole cigarette break comes to this on the clock
-  wordsPerHour: 20,          // the words to say from the prompt before you have earned a break
+  breakEvery: 30,            // minutes: a break comes due at each multiple of this past midnight (:00 and :30)
+  wordsPerBreak: 20,         // the words to say from the prompt, once it is due, before you have earned it
   cols: 7, rows: 1,          // the cells it takes, in the corner (it is painted, so any size will do)
   saveEvery: 10,             // seconds (real) between saves while it runs
   on:  '#a8382e',            // a lit segment: a muted red
@@ -1111,10 +1113,10 @@ const Clock = (() => {
   function tick(now) {
     const dt = last == null ? 0 : Math.min(1, (now - last) / 1000);   // a long gap (the page put away) is not made up
     last = now;
-    if (!state.clock || document.hidden || !dt) return;
-    const hour = Math.floor(state.clockT / 3600);
+    if (!state.clock || document.hidden || !dt || state.menu) return;   // the game's menu stops it
+    const bell = 60 * K.breakEvery, was = Math.floor(state.clockT / bell);
     state.clockT = (state.clockT + dt * rate()) % 86400;
-    if (Math.floor(state.clockT / 3600) !== hour) api.onHour();
+    if (Math.floor(state.clockT / bell) !== was) api.onBell();
     if ((sinceSave += dt) >= K.saveEvery) { sinceSave = 0; save(); }
   }
 
@@ -1187,7 +1189,7 @@ const Clock = (() => {
     at = null;                                                 // placed afresh each frame, or it is put away
   }
 
-  const api = { tick, place, paint, onHour: () => {} };
+  const api = { tick, place, paint, onBell: () => {} };
   return api;
 })();
 
@@ -1355,7 +1357,7 @@ const SECRET_NAMES = [
 // things for the office, bought once
 const OFFICE_ITEMS = [
   { id: 'clock', label: 'Buy a wall clock.', cost: 1000, owned: () => state.clock,
-    buy() { state.clock = true; state.clockT = CFG.clock.dayStart; state.breakDue = false; state.wordsLeft = CFG.clock.wordsPerHour; } },
+    buy() { state.clock = true; state.clockT = CFG.clock.dayStart; state.breakDue = false; state.wordsLeft = CFG.clock.wordsPerBreak; } },
 ];
 
 // ---------- the SPEAK tab ----------
@@ -1370,11 +1372,12 @@ const state = {
   sel: 0,                  // highlighted row on the BUY NAMES tab
   typed: [],               // every consonant key of the current attempt, right or wrong
   modal: null,             // a notice that seizes the screen until a key is pressed
+  menu: null,              // the game's own menu (ESC), over everything, while it is up: { sel, confirm }.  saved as open or not: a reload stays paused
   infractions: 0,          // the permanent record
   clock: false,            // a wall clock bought for the office: time passes, and breaks can be earned
   clockT: 0,               // what it says, in seconds after midnight
-  breakDue: false,         // the top of the hour has come since the last break (or since the clock went up)
-  wordsLeft: 0,            // ...and these words are still to say from the prompt before you go; back to the full count every hour
+  breakDue: false,         // a break time (:00 or :30) has come since the last break (or since the clock went up)
+  wordsLeft: 0,            // ...and these words are still to say from the prompt before you go; the full count each time a break comes due
   officeSel: 0,            // highlighted row on the OFFICE tab
   litAt: 0,                // when the cigarette was lit, on the performance clock (not saved: a reload puts it out)
   tabBlink: 0,             // half-blinks left on the BUY NAMES tab after money crosses a price
@@ -1647,8 +1650,10 @@ function handleKey(e) {
     if (modalVisible() && real && !e.ctrlKey && !e.metaKey && !e.altKey) acceptModal();
     return;
   }
+  if (state.menu) { e.preventDefault(); menuKey(e); return; }
   if (e.key === 'F9') { scr.smooth = !scr.smooth; e.preventDefault(); return; }
-  if (state.tab === 'CLOCK OUT' && breaksOpen() && Break.captive()) { clockOutKey(e); return; }   // outside: no tabs, only back in
+  if (state.tab === 'CLOCK OUT' && breaksOpen() && Break.captive()) { clockOutKey(e); return; }   // outside: no tabs, only back in (ESC too)
+  if (e.key === 'Escape') { e.preventDefault(); state.menu = { sel: 0, confirm: null }; save(); return; }
   if (e.key === 'Tab' || e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
     e.preventDefault();
     const i = state.tabs.indexOf(state.tab), n = state.tabs.length;
@@ -1688,7 +1693,7 @@ function handleKey(e) {
   }
   if (state.tab === 'CLOCK OUT' && breaksOpen()) { clockOutKey(e); return; }
   if (state.tab !== 'SPEAK') return;
-  if (['Backspace', 'Delete', 'Escape'].includes(e.key)) {
+  if (['Backspace', 'Delete'].includes(e.key)) {
     e.preventDefault();
     if (!state.holding) clearBox();         // any of these wipes the box and you start over
     return;
@@ -1723,7 +1728,7 @@ function clockOutKey(e) {
   if (r) e.preventDefault();
   if (r === 'light') {
     state.litAt = performance.now();
-    if (state.clock) { state.breakDue = false; save(); }   // the break is taken: wait for the next hour
+    if (state.clock) { state.breakDue = false; save(); }   // the break is taken: wait for the next break time
   }
   if (r === 'back') {
     state.tab = 'SPEAK';
@@ -1790,12 +1795,14 @@ function drawSpeak(x0, y0, w, h) {
   state.log.forEach((ln, li) => {
     const wr = wraps[li];
     if (r + wr.n - 1 < y0) { r += wr.n; return; }        // wholly above the panel
-    if (ln.holy) {                                       // the light falls on the hebrew and its reading
-      const top = Math.max(r, y0), c0 = x0 + CFG.valCol + CFG.gap, cr = c0 + CFG.hebCol + CFG.gap;
+    const top = Math.max(r, y0), c0 = x0 + CFG.valCol + CFG.gap, cr = c0 + CFG.hebCol + CFG.gap;
+    const hw = CFG.hebCol + CFG.gap + CFG.romCol, hh = r + wr.n - top;
+    const floats = ln.holy && !seized();                 // behind a notice it settles into the glass
+    if (floats) {                                        // the light falls on the hebrew and its reading
       const glyphs = [];
       wr.heb.forEach((t, i) => [...t].forEach((ch, j) => { if (ch !== ' ') glyphs.push({ col: c0 + CFG.hebCol - 1 - j, row: r + i, ch }); }));
       wr.rom.forEach((t, i) => [...t].forEach((ch, j) => { if (ch !== ' ') glyphs.push({ col: cr + j, row: r + i, ch }); }));
-      holyCells.push({ col: c0, row: top, w: CFG.hebCol + CFG.gap + CFG.romCol, h: r + wr.n - top, seed: li + 1,
+      holyCells.push({ col: c0, row: top, w: hw, h: hh, seed: li + 1,
                        glyphs: glyphs.filter(g => g.row >= y0) });
     }
     if (ln.heb) {
@@ -1804,7 +1811,7 @@ function drawSpeak(x0, y0, w, h) {
       let cx = x0;
       if (ln.val != null && r >= y0) { const v = String(ln.val); scr.text(cx + CFG.valCol - v.length, r, v, ln.fg); }
       cx += CFG.valCol + CFG.gap;
-      const tf = ln.holy && Levitate.floating ? CFG.levitate.restColor : ln.fg;   // a floating word leaves its place
+      const tf = floats && Levitate.floating ? CFG.levitate.restColor : ln.fg;   // a floating word leaves its place
       if (tf) wr.heb.forEach((t, i) => { if (r + i >= y0) putHebrew(cx + CFG.hebCol - 1, r + i, t, tf, ln.bold); });
       cx += CFG.hebCol + CFG.gap;
       if (tf) wr.rom.forEach((t, i) => { if (r + i >= y0) scr.text(cx, r + i, t, tf, null, ln.bold); });
@@ -2082,6 +2089,92 @@ function drawModal() {
   scr.text(x + 2, y + H - 2, 'Press any key to continue.', C.fg);
 }
 
+// ---------- the game's menu ----------
+// Not the Company's: ESC from anywhere inside brings it up over everything, and
+// the clock stops while it is up.  A list like the stores', and ESC to go back.
+const MENU_ITEMS = [
+  { label: 'RESTART GAME', confirm: { text: ['Erase all progress and start over?', 'This can\'t be undone.'],
+                                      options: ['KEEP PLAYING', 'ERASE AND RESTART'], danger: 1, act: restartGame } },
+];
+function restartGame() {
+  state.erasing = true;                      // nothing more is saved on the way out
+  try { localStorage.removeItem(SAVE_KEY); } catch (e) {}
+  location.reload();
+}
+function menuKey(e) {
+  const m = state.menu, c = m.confirm;
+  if (c) {                                   // the question: ←→ choose, ENTER answers, ESC backs out of it
+    const n = c.options.length;
+    if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Tab'].includes(e.key)) {
+      const back = e.key === 'ArrowLeft' || e.key === 'ArrowUp';
+      c.sel = (c.sel + (back ? n - 1 : 1)) % n;
+    } else if (e.key === 'Enter' || e.key === ' ') {
+      if (c.sel === 0) m.confirm = null;     // the first answer is always the safe one
+      else c.act();
+    } else if (e.key === 'Escape') m.confirm = null;
+    return;
+  }
+  if (e.key === 'Escape') { state.menu = null; save(); }
+  else if (e.key === 'ArrowDown') m.sel = Math.min(m.sel + 1, MENU_ITEMS.length - 1);
+  else if (e.key === 'ArrowUp') m.sel = Math.max(m.sel - 1, 0);
+  else if (e.key === 'Enter') { const it = MENU_ITEMS[m.sel]; if (it.confirm) m.confirm = { ...it.confirm, sel: 0 }; }
+}
+// a notice has the screen: the light layers are put away, and holy words settle back into the glass.
+// the menu only covers its own box: the light goes on around it, cut away where the box is
+const seized = () => modalVisible();
+function menuBox() {
+  const m = state.menu, c = m.confirm;
+  const W = 50, x = Math.floor((scr.cols - W) / 2);
+  const said = c ? c.text : state.clock ? ['The real-time clock is stopped.'] : [];
+  const listRows = c ? 1 : MENU_ITEMS.length;
+  const H = 4 + (said.length ? said.length + 1 : 0) + listRows + 1 + 2;   // border and a blank, GAME PAUSED and a blank, what it says, the list, a blank, the hint and border
+  return { x, y: Math.floor((scr.rows - H) / 2), W, H, said };
+}
+// the light layers lie over the terminal, so the menu's box is cut out of each of them
+let maskWas = '';
+function maskLayers() {
+  const box = state.menu && menuBox(), v = scr.view.getBoundingClientRect();
+  const key = box ? [box.x, box.y, box.W, box.H, v.left, v.top, v.width, v.height].join() : '';
+  if (key === maskWas) return;
+  maskWas = key;
+  for (const id of ['gravity', 'radiance', 'levitate']) {
+    const el = document.getElementById(id);
+    if (!box) { el.style.clipPath = ''; continue; }
+    const e = id === 'gravity' ? v : { left: 0, top: 0 };   // gravity lies exactly over the terminal (and may be hidden); the others cover the window
+    const sx = v.width / scr.cols, sy = v.height / scr.rows;
+    const x1 = v.left + box.x * sx - e.left, y1 = v.top + box.y * sy - e.top;
+    const x2 = x1 + box.W * sx, y2 = y1 + box.H * sy;
+    // the whole layer, less the box: one outline traced around, a hole traced inside
+    el.style.clipPath = `polygon(evenodd, 0 0, 100% 0, 100% 100%, 0 100%, 0 0, ${x1}px ${y1}px, ${x1}px ${y2}px, ${x2}px ${y2}px, ${x2}px ${y1}px, ${x1}px ${y1}px)`;
+  }
+}
+function drawMenu() {
+  const C = CFG.colors, m = state.menu, c = m.confirm;
+  const { x, y, W, H, said } = menuBox();
+  scr.fill(x, y, W, H, ' ', C.fg, C.bg);
+  scr.box(x, y, W, H, 'MENU', C.bright);
+  const head = 'GAME PAUSED';
+  scr.text(x + Math.floor((W - head.length) / 2), y + 2, head, C.bright, null, true);
+  let r = y + 4;
+  said.forEach(ln => scr.text(x + Math.floor((W - ln.length) / 2), r++, ln, C.fg));
+  if (said.length) r++;
+  if (c) {                                   // buttons, as in the alley
+    const btns = c.options.map(o => `[ ${o} ]`), gap = 4;
+    let bx = x + Math.floor((W - btns.join(' '.repeat(gap)).length) / 2);
+    btns.forEach((b, i) => {
+      const on = i === c.sel, red = on && i === c.danger;    // the destructive one lights white on red, like MIC: ON
+      scr.text(bx, r, b, on ? (red ? C.bright : C.bg) : C.fg, on ? (red ? C.bad : C.fg) : null, on);
+      bx += b.length + gap;
+    });
+  } else MENU_ITEMS.forEach((it, i) => {     // rows, as in the stores: highlighted in reverse video
+    const hi = i === m.sel, row = r + i;
+    if (hi) scr.fill(x + 2, row, W - 4, 1, ' ', C.bg, C.fg);
+    scr.text(x + 3, row, it.label, hi ? C.bg : C.bright, hi ? C.fg : null, true);
+  });
+  const hint = c ? '(Press ESC to go back.)' : '(Press ESC to resume.)';
+  scr.text(x + Math.floor((W - hint.length) / 2), y + H - 2, hint, CFG.breakScene.escColor);
+}
+
 function drawOffice(x0, y0, w, h) {
   const C = CFG.colors, forSale = officeForSale();
   scr.text(x0 + 1, y0 + 1, state.clock ? 'Your office has a wall clock.' : 'Your office has no decorations.', C.fg);
@@ -2107,7 +2200,7 @@ function drawClockOut(x0, y0, w, h) {
   const C = CFG.colors;
   if (!breaksOpen()) {
     if (!state.clock) { scr.text(x0 + 1, y0 + 1, "It's not time to take a break yet.", C.fg); return; }
-    const mins = Math.ceil((3600 - state.clockT % 3600) / 60);   // to the hour
+    const bell = 60 * CFG.clock.breakEvery, mins = Math.ceil((bell - state.clockT % bell) / 60);   // to the next break time
     scr.text(x0 + 1, y0 + 1, state.breakDue ? `I should do some words before I go. ${state.wordsLeft}`
                                             : `Just ${mins} minute${mins === 1 ? '' : 's'} left.`, C.fg);
     return;
@@ -2172,7 +2265,7 @@ function drawNow() {
   const out = state.tab === 'CLOCK OUT' && breaksOpen();
   const choosing = state.tab === 'BUY NAMES' && selected() >= 0 || state.tab === 'OFFICE' && officeSelected() >= 0
                 || out && Break.phase() === 'menu';
-  const hint = out && Break.captive() ? '' : choosing ? '←→ tabs  ↑↓ select' : '←→ tabs';   // nothing to select, no promise of it
+  const hint = out && Break.captive() ? '' : (choosing ? '←→ tabs  ↑↓ select' : '←→ tabs') + '  Esc menu';   // nothing to select, no promise of it
   const clockCols = state.clock && !bare ? CFG.clock.cols : 0;   // the clock is on the wall: outside, with the tabs, it is gone
   scr.text(cols - clockCols - hint.length - 1, ty, hint, C.tabFg, C.tabBg);
   if (clockCols) Clock.place(scr, cols - clockCols, rows - CFG.clock.rows);
@@ -2181,21 +2274,25 @@ function drawNow() {
     if (!state.modal.applied) applyViolation(state.modal);
     drawModal();
   }
+  if (state.menu) drawMenu();
   scr.render();
   Clock.paint(scr);
-  Radiance.set(modalVisible() ? [] : holyCells, scr);   // the notice seizes the screen; the light waits
-  Gravity.set(modalVisible() ? [] : holyCells, scr);    // and the cloth lies flat again
-  Levitate.set(modalVisible() ? [] : holyCells, scr);   // and the word settles back into the glass
+  const held = seized();
+  maskLayers();
+  Radiance.set(held ? [] : holyCells, scr);   // the notice (or the menu) seizes the screen; the light waits
+  Gravity.set(held ? [] : holyCells, scr);    // and the cloth lies flat again
+  Levitate.set(held ? [] : holyCells, scr);   // and the word settles back into the glass
 }
 
 // ---------- persistence ----------
 const SAVE_KEY = 'countenance.v3';   // bump when the saved shape changes
 function save() {
+  if (state.erasing) return;                 // restarting: the old game is not written back
   try {
     localStorage.setItem(SAVE_KEY, JSON.stringify({
       cents: state.cents, amulets: state.amulets.map(a => a.heb), log: state.log.slice(-200),
       stack: state.stack, charges: state.charges, infractions: state.infractions,
-      clock: state.clock, clockT: Math.round(state.clockT), breakDue: state.breakDue, wordsLeft: state.wordsLeft,
+      clock: state.clock, clockT: Math.round(state.clockT), breakDue: state.breakDue, paused: !!state.menu, wordsLeft: state.wordsLeft,
       modal: state.modal ? { kind: state.modal.kind, id: state.modal.id, showAt: state.modal.showAt, applied: state.modal.applied } : null,
     }));
   } catch (e) { /* private window or storage disabled: play on without memory */ }
@@ -2224,7 +2321,8 @@ function load() {
     state.clock = !!d.clock;
     state.clockT = d.clockT || CFG.clock.dayStart;
     state.breakDue = !!d.breakDue;
-    state.wordsLeft = d.wordsLeft ?? CFG.clock.wordsPerHour;
+    if (d.paused) state.menu = { sel: 0, confirm: null };   // left paused: still paused
+    state.wordsLeft = d.wordsLeft ?? CFG.clock.wordsPerBreak;
     state.modal = d.modal || null;
     return true;
   } catch (e) { return false; }
@@ -2245,7 +2343,9 @@ window.addEventListener('error', e => {
 
 state.intro = INTRO.map(l => '  ' + l);
 load();
-Clock.onHour = () => { state.breakDue = true; state.wordsLeft = CFG.clock.wordsPerHour; save(); };   // the top of the hour: a break is due, after the words
+// :00 or :30: a break comes due, after the words.  one already due stays as it is, words said and all,
+// however many bells go by: only lighting up spends it
+Clock.onBell = () => { if (!state.breakDue) { state.breakDue = true; state.wordsLeft = CFG.clock.wordsPerBreak; save(); } };
 addEventListener('pagehide', save);                  // the clock's last minutes, kept
 replenishAmulets();
 { // dev: ?demo=N pre-fills N spoken words so the scrolling can be inspected
@@ -2259,8 +2359,8 @@ replenishAmulets();
 newWord();
 
 setInterval(() => {
-  state.blinkOn = !state.blinkOn;      // 1 Hz: the cursor, the notice's flash, the BUY NAMES tab's nudge
-  if (state.tabBlink > 0) state.tabBlink--;
+  state.blinkOn = state.menu ? true : !state.blinkOn;   // 1 Hz: the cursor, the notice's flash, the BUY NAMES tab's nudge (held still while paused)
+  if (state.tabBlink > 0 && !state.menu) state.tabBlink--;
   draw();
 }, 500);
 setInterval(() => {
